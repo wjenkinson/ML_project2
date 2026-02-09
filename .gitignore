@@ -3,10 +3,6 @@ __pycache__/
 *.py[cod]
 *.pyo
 
-# LAMMPS data
-data/
-dump.*.LAMMPS
-
 # Virtual environments
 venv/
 .env/
