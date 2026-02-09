@@ -1,0 +1,37 @@
+# Python bytecode and cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# LAMMPS data
+data/
+dump.*.LAMMPS
+
+# Virtual environments
+venv/
+.env/
+.env.*
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and outputs
+logs/
+*.pt
+*.log
+
+# PyTorch / ML artifacts
+checkpoints/
+*.pt
+*.pth
+*.ckpt
