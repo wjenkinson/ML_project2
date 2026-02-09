@@ -20,8 +20,7 @@ ML_project2/
 │   ├── post_figures.py
 ├── roadmap.md
 ├── requirements.txt
-├── .gitignore
-└── ML_project2.code-workspace
+└── .gitignore
 ```
 
 ---
@@ -49,4 +48,60 @@ flowchart TD
     G --> H
 ```
 
-Further sections (setup, usage examples, and a refined discussion of physics-informed losses) will be added as the implementation matures.
+---
+
+## Demo
+
+This project focuses on comparing **ground truth LAMMPS frames** with predictions from a **physics-informed hybrid PDE + GNN model**.
+
+```text
+[GIF placeholder]
+Ground truth vs physics-informed prediction over a sequence of frames.
+```
+
+In the final version, this section will embed a GIF (e.g. `output/prediction_vs_gt_pinn.gif`) showing:
+- Left: ground truth simulation.
+- Right: model prediction.
+
+---
+
+## Quantitative Comparison
+
+```text
+[Figure placeholder]
+Quantitative comparison of ground truth vs prediction.
+```
+
+This section will show one or more figures (e.g. `output/quantitative_comparison_pinn.png`) that summarize:
+- Error metrics between ground truth and predictions.
+- One or two representative profiles (e.g. centreline cuts) comparing shapes and interfaces.
+
+---
+
+## Conclusion
+
+This section will briefly summarize the key observations from the physics-informed model, for example:
+- How well the model respects the intended physical constraints.
+- Where it improves on a naive GNN baseline.
+- Remaining limitations or failure modes.
+
+---
+
+## How to Reproduce
+
+Once the implementation is complete, the results shown above can be reproduced with a sequence of commands similar to:
+
+```bash
+python src/preview_data.py        # quick sanity check of raw data
+python src/preprocess_data.py     # build train/val splits and tensors
+python src/train_pinn.py          # train the physics-informed model
+python src/predict_sequence.py    # generate sequence predictions
+python src/post_videos.py         # create demo GIFs / videos
+python src/post_figures.py        # generate quantitative comparison figures
+```
+
+---
+
+## License
+
+This project is for educational purposes.

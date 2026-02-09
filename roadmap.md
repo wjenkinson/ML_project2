@@ -7,7 +7,7 @@
 
 ---
 
-#### **Phase 0: Project 1 Audit**
+#### (COMPLETE) **Phase 0: Project 1 Audit**
 **Description:** Identify weak software architecture flows and inconsistencies from Project 1.
 
 **Tasks:**
@@ -18,6 +18,8 @@
 **Success Criteria:**
 - Identified 3+ issues and documented them.
 - Rebuilt core architecture making the necessary changes.
+
+(notes: outcomes include predetermined file structure and a more minimal repo)
 
 **Failure Criteria:**
 - No improvements made.
