@@ -35,3 +35,6 @@ checkpoints/
 *.pt
 *.pth
 *.ckpt
+
+# Project 1 artifacts
+project1_*
