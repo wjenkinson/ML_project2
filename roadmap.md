@@ -19,7 +19,7 @@
 - Identified 3+ issues and documented them.
 - Rebuilt core architecture making the necessary changes.
 
-(notes: outcomes include predetermined file structure and a more minimal repo)
+(notes: outcomes include predetermined file structure, a more minimal repo, a greater focus on tests)
 
 **Failure Criteria:**
 - No improvements made.

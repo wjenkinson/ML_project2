@@ -92,12 +92,12 @@ This section will briefly summarize the key observations from the physics-inform
 Once the implementation is complete, the results shown above can be reproduced with a sequence of commands similar to:
 
 ```bash
-python src/preview_data.py        # quick sanity check of raw data
-python src/preprocess_data.py     # build train/val splits and tensors
-python src/train_pinn.py          # train the physics-informed model
-python src/predict_sequence.py    # generate sequence predictions
-python src/post_videos.py         # create demo GIFs / videos
-python src/post_figures.py        # generate quantitative comparison figures
+python src/preview_data.py
+python src/preprocess_data.py
+python src/train_pinn.py
+python src/predict_sequence.py
+python src/post_videos.py
+python src/post_figures.py
 ```
 
 ---
