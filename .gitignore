@@ -35,3 +35,8 @@ checkpoints/
 # Project 1 artifacts
 project1_postportem.md
 project
+
+# Data
+data/*.json
+data/split
+data/neighbors
