@@ -38,5 +38,5 @@ project
 
 # Data
 data/*.json
-data/split
-data/neighbors
+data/splits/
+data/neighbors/
