@@ -15,12 +15,18 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from io import StringIO
 from pathlib import Path
-from typing import Iterable, List, Sequence, Tuple
+from typing import Iterable, List, Sequence
+
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
 
 
 DATA_DIR_NAME = "data"
 SPLITS_SUBDIR = "splits"
+NEIGHBOR_CACHE_SUBDIR = "neighbors"
+NEIGHBOR_RADIUS = 0.0015
 
 
 @dataclass
@@ -115,15 +121,143 @@ def write_metadata(data_dir: Path, split: SplitResult) -> Path:
     return output_path
 
 
-def cache_neighbor_lists_stub(data_dir: Path, split: SplitResult) -> None:
-    """Placeholder for caching neighbour lists / edge indices.
+def neighbor_cache_dir(data_dir: Path) -> Path:
+    """Return the directory where cached neighbour lists will be stored.
 
-    In a future iteration, this function could:
-    - Build particle graphs per frame.
-    - Cache edge indices and any per-edge features needed by the GNN.
+    This is a shared convention that other modules can use to discover
+    precomputed neighbour lists / edge indices.
     """
 
-    print("Cached neighbor lists: No (stub implementation).")
+    return data_dir / NEIGHBOR_CACHE_SUBDIR
+
+
+def neighbor_cache_exists(data_dir: Path) -> bool:
+    """Return True if a neighbour cache directory already exists.
+
+    The current stub implementation does not create this directory; a future
+    implementation that actually computes neighbour lists is expected to
+    populate it. Other modules can use this helper to decide whether to
+    rely on the cache or emit a message such as:
+
+        "Neighbour list not cached, run preprocess_data.py".
+    """
+
+    return neighbor_cache_dir(data_dir).exists()
+
+
+def cache_neighbor_lists_stub(data_dir: Path, split: SplitResult) -> None:
+    """Compute and cache simple neighbour statistics for each split frame.
+
+    For each dump file in the train/validation split, this function:
+    - Loads atom positions and types.
+    - Builds a radius-based neighbour graph using ``NEIGHBOR_RADIUS``.
+    - Computes, per atom:
+      - Total neighbour count (excluding self).
+      - Number of neighbours of a different type.
+    - Saves these statistics into ``data/neighbors/<dump_name>.npz``.
+
+    The cached data is intended for later use in physics checks (e.g.
+    neighbour-count constraints) and, potentially, for defining graph
+    structures for GNNs.
+    """
+
+    cache_dir = neighbor_cache_dir(data_dir)
+    # Always refresh the cache so changes in NEIGHBOR_RADIUS or data are
+    # reflected immediately. Remove existing .npz files and recreate the
+    # directory if needed.
+    if cache_dir.exists():
+        for p in cache_dir.glob("*.npz"):
+            p.unlink()
+    else:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def _load_types_and_coords(path: Path) -> tuple[np.ndarray, np.ndarray]:
+        """Load atom types and 2D coordinates (x, y) from a dump file."""
+
+        lines = path.read_text().splitlines(keepends=True)
+
+        timestep = None
+        num_atoms = None
+        atoms_header_idx = None
+
+        for i, line in enumerate(lines):
+            s = line.strip()
+            if s.startswith("ITEM: TIMESTEP") and i + 1 < len(lines):
+                timestep = int(lines[i + 1].strip())
+            elif s.startswith("ITEM: NUMBER OF ATOMS") and i + 1 < len(lines):
+                num_atoms = int(lines[i + 1].strip())
+            elif s.startswith("ITEM: ATOMS"):
+                atoms_header_idx = i
+
+        if timestep is None or num_atoms is None or atoms_header_idx is None:
+            raise ValueError(f"File {path} does not look like a valid LAMMPS dump")
+
+        header_tokens = lines[atoms_header_idx].strip().split()
+        columns = header_tokens[2:]
+        col_indices = {name: idx for idx, name in enumerate(columns)}
+
+        if "type" not in col_indices or "x" not in col_indices or "y" not in col_indices:
+            raise ValueError(
+                f"Dump {path} must contain at least 'id type x y' columns; got {columns}"
+            )
+
+        data_start = atoms_header_idx + 1
+        data_end = data_start + num_atoms
+        data_lines = lines[data_start:data_end]
+
+        raw = np.loadtxt(StringIO("".join(data_lines)))
+        if raw.ndim == 1:
+            raw = raw[np.newaxis, :]
+
+        types = raw[:, col_indices["type"]].astype(int)
+        xs = raw[:, col_indices["x"]]
+        ys = raw[:, col_indices["y"]]
+        coords = np.stack([xs, ys], axis=1)
+
+        return types, coords
+
+    def _compute_neighbor_stats(types: np.ndarray, coords: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Compute per-atom neighbour counts and different-type neighbour counts."""
+
+        nn = NearestNeighbors(radius=NEIGHBOR_RADIUS)
+        nn.fit(coords)
+        indices_list = nn.radius_neighbors(coords, return_distance=False)
+
+        neighbor_counts = np.zeros(len(coords), dtype=int)
+        diff_type_counts = np.zeros(len(coords), dtype=int)
+
+        for i, neigh_idx in enumerate(indices_list):
+            # Exclude self from neighbour count if present.
+            mask = neigh_idx != i
+            neigh_idx = neigh_idx[mask]
+
+            neighbor_counts[i] = neigh_idx.size
+            if neigh_idx.size > 0:
+                diff_type_counts[i] = np.count_nonzero(types[neigh_idx] != types[i])
+
+        return neighbor_counts, diff_type_counts
+
+    all_files: list[Path] = []
+    all_files.extend(split.train_files)
+    all_files.extend(split.val_files)
+
+    for dump_path in all_files:
+        cache_path = cache_dir / f"{dump_path.name}.npz"
+        if cache_path.exists():
+            continue
+
+        types, coords = _load_types_and_coords(dump_path)
+        neighbor_counts, diff_type_counts = _compute_neighbor_stats(types, coords)
+
+        np.savez_compressed(
+            cache_path,
+            neighbor_counts=neighbor_counts,
+            diff_type_counts=diff_type_counts,
+            types=types,
+            radius=NEIGHBOR_RADIUS,
+        )
+
+    print(f"Cached neighbor lists: Yes (radius={NEIGHBOR_RADIUS}) in {cache_dir}")
 
 
 def cache_frame_scalars_stub(data_dir: Path, split: SplitResult) -> None:

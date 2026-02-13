@@ -24,7 +24,7 @@
 **Failure Criteria:**
 - No improvements made.
 
-#### **Phase 1: Physics Analysis**
+#### (COMPLETE) **Phase 1: Physics Analysis**
 **Description:** Analyze the physics governing the simulation and identify constraints.
 
 **Tasks:**
@@ -32,8 +32,8 @@
 - Implement physics checks: Develop methods to ensure physical consistency.
 
 **Success Criteria:**
-- Physical constraints are identified and documented.
-- Initial physics checks are implemented and functional.
+- Physical constraints are identified and documented. (See `physics.md`.)
+- Initial physics checks (mass conservation and neighbour constraints) are implemented and functional. (See `physics_checks.py`.)
 
 **Failure Criteria:**
 - Physical constraints cannot be clearly defined or implemented.

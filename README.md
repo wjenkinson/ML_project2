@@ -14,10 +14,12 @@ ML_project2/
 ├── src/
 │   ├── preview_data.py
 │   ├── preprocess_data.py
+│   ├── physics_checks.py
 │   ├── train_pinn.py
 │   ├── predict_sequence.py
 │   ├── post_videos.py
 │   ├── post_figures.py
+├── physics.md
 ├── roadmap.md
 ├── requirements.txt
 └── .gitignore
@@ -35,9 +37,12 @@ flowchart TD
     A["**Raw simulation data**<br/>LAMMPS dump files in data/"]
 
     A --> B["**Preview data**<br/>preview_data.py"]
-    B --> C["**Preprocess data**<br/>preprocess_data.py<br/>- train/val splits<br/>- normalized tensors"]
+    B --> C["**Preprocess data**<br/>preprocess_data.py<br/>- train/val splits<br/>- cached neighbour stats"]
+
+    C --> PC["**Physics checks & diagnostics**<br/>physics_checks.py<br/>- mass conservation<br/>- neighbour constraints"]
 
     C --> D["**Train physics-informed model**<br/>train_pinn.py<br/>- hybrid PDE + GNN<br/>- physics-informed loss"]
+    PC --> D
 
     D --> E["**Predict sequences**<br/>predict_sequence.py<br/>- generate next-frame / sequence predictions"]
 
