@@ -124,6 +124,7 @@ def format_neighbor_constraints(
     data_dir: Path,
     dump_files: Sequence[Path],
     max_neighbors: int = 8,
+    min_neighbors: int = 4,
     min_diff_type_neighbors_for_violation: int = 8,
 ) -> str:
     """Format neighbour-count constraint diagnostics.
@@ -150,6 +151,7 @@ def format_neighbor_constraints(
         meta = infer_metadata_from_lines(dump_path, lines_raw)
 
         too_many_neighbors = int(np.count_nonzero(neighbor_counts > max_neighbors))
+        too_few_neighbors = int(np.count_nonzero(neighbor_counts < min_neighbors))
         too_many_diff_type = int(
             np.count_nonzero(diff_type_counts >= min_diff_type_neighbors_for_violation)
         )
@@ -161,7 +163,8 @@ def format_neighbor_constraints(
 
         lines.append(
             f"Frame {dump_path.name} (t = {meta.timestep}): "
-            f"{too_many_neighbors} atom(s) with > {max_neighbors} neighbours (ave = {avg_neighbors:.2f}); "
+            f"{too_many_neighbors} atom(s) with > {max_neighbors} neighbours; "
+            f"{too_few_neighbors} atom(s) with < {min_neighbors} neighbours (ave = {avg_neighbors:.2f}); "
             f"{too_many_diff_type} atom(s) with >= {min_diff_type_neighbors_for_violation} "
             f"neighbours of different type.(ave = {avg_diff_type:.2f})"
         )

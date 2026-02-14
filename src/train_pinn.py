@@ -12,6 +12,7 @@ positions and atom types, and the training loss combines:
 from __future__ import annotations
 
 from pathlib import Path
+import argparse
 
 import torch
 from torch import nn
@@ -72,15 +73,28 @@ def mass_center_loss(preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor
 
 
 def rigid_wall_velocity_loss(preds: torch.Tensor, batch) -> torch.Tensor:
-    """Stub for rigid-wall velocity constraint.
+    """Rigid-wall velocity constraint based on predicted displacement.
 
-    Rigid walls (type 3) should ideally have zero velocity. This stub returns
-    zero for now and will be implemented once velocity information is threaded
-    through the dataset.
+    Rigid walls (type 3) should ideally have zero velocity. We approximate
+    velocity using the displacement between positions at t (``batch.pos``)
+    and predicted positions at t+1 (``preds``), and penalise motion of type-3
+    atoms.
     """
 
-    # Placeholder: no contribution yet.
-    return torch.zeros((), dtype=preds.dtype, device=preds.device)
+    atom_type = batch.atom_type.to(preds.device)
+    pos_t = batch.pos.to(preds.device)
+
+    wall_mask = atom_type == 3
+    if not torch.any(wall_mask):
+        return torch.zeros((), dtype=preds.dtype, device=preds.device)
+
+    disp = preds - pos_t
+    wall_disp = disp[wall_mask]
+
+    if wall_disp.numel() == 0:
+        return torch.zeros((), dtype=preds.dtype, device=preds.device)
+
+    return wall_disp.pow(2).sum(dim=-1).mean()
 
 
 def interface_sharpness_loss(preds: torch.Tensor, batch) -> torch.Tensor:
@@ -98,6 +112,7 @@ def neighbor_constraint_loss(
     preds: torch.Tensor,
     batch,
     max_neighbors: float = 8.0,
+    min_neighbors: float = 4.0,
     max_diff_type_neighbors: float = 8.0,
     radius: float | None = None,
 ) -> torch.Tensor:
@@ -128,9 +143,10 @@ def neighbor_constraint_loss(
     soft_diff.scatter_add_(0, row, weights * diff_mask)
 
     over_all = torch.relu(soft_all - max_neighbors)
+    under_all = torch.relu(min_neighbors - soft_all)
     over_diff = torch.relu(soft_diff - max_diff_type_neighbors)
 
-    return over_all.pow(2).mean() + over_diff.pow(2).mean()
+    return over_all.pow(2).mean() + under_all.pow(2).mean() + over_diff.pow(2).mean()
 
 
 def train(
@@ -159,8 +175,8 @@ def train(
         print("Train dataset is empty; nothing to train on.")
         return
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
     model = SimpleGnnPredictor(in_channels=4, hidden_channels=64, num_layers=2).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -193,6 +209,7 @@ def train(
                 preds,
                 batch,
                 max_neighbors=8.0,
+                min_neighbors=4.0,
                 max_diff_type_neighbors=8.0,
                 radius=radius,
             )
@@ -230,6 +247,7 @@ def train(
                     preds,
                     batch,
                     max_neighbors=8.0,
+                    min_neighbors=4.0,
                     max_diff_type_neighbors=8.0,
                     radius=radius,
                 )
@@ -267,25 +285,48 @@ def train(
     print("Training complete.")
     print(f"Best validation loss: {best_val_loss:.6f}")
 def main() -> None:
-    """Run a sequence of training configurations for comparison.
+    """Run one or more training configurations for comparison.
 
-    Configurations:
-    - vanilla: data loss only.
-    - mass: data + mass-center loss.
-    - neighbors: data + neighbour loss.
-    - rigid: data + (stub) rigid-wall loss.
-    - interface: data + (stub) interface-sharpness loss.
-    - all: data + all available physics terms.
+    By default, all configurations are trained. You can restrict this using
+    CLI flags, for example:
+
+    - ``python -m src.train_pinn -c vanilla``
+    - ``python -m src.train_pinn -c vanilla mass neighbors``
     """
 
-    configs = [
+    all_configs = [
         {"name": "vanilla", "lambda_mass": 0.0, "lambda_neighbors": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0},
         {"name": "mass", "lambda_mass": 1e-3, "lambda_neighbors": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0},
         {"name": "neighbors", "lambda_mass": 0.0, "lambda_neighbors": 1e-4, "lambda_rigid": 0.0, "lambda_interface": 0.0},
-        {"name": "rigid", "lambda_mass": 0.0, "lambda_neighbors": 0.0, "lambda_rigid": 1e-4, "lambda_interface": 0.0},
+        {"name": "rigid", "lambda_mass": 0.0, "lambda_neighbors": 0.0, "lambda_rigid": 2e-1, "lambda_interface": 0.0},
         {"name": "interface", "lambda_mass": 0.0, "lambda_neighbors": 0.0, "lambda_rigid": 0.0, "lambda_interface": 1e-4},
         {"name": "all", "lambda_mass": 1e-3, "lambda_neighbors": 1e-4, "lambda_rigid": 1e-4, "lambda_interface": 1e-4},
     ]
+
+    parser = argparse.ArgumentParser(description="Train physics-informed GNN configurations.")
+    parser.add_argument(
+        "-c",
+        "--config",
+        dest="configs",
+        nargs="+",
+        choices=[cfg["name"] for cfg in all_configs],
+        help=(
+            "Name(s) of configurations to train. "
+            "If omitted, all configurations are trained. "
+            "Choices: vanilla, mass, neighbors, rigid, interface, all."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    if args.configs:
+        configs = [cfg for cfg in all_configs if cfg["name"] in args.configs]
+    else:
+        configs = all_configs
+
+    if not configs:
+        print("No matching configurations to train (check --config names).")
+        return
 
     for cfg in configs:
         print("\n" + "=" * 80)

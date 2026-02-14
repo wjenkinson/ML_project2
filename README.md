@@ -99,9 +99,9 @@ Once the implementation is complete, the results shown above can be reproduced w
 ```bash
 python src/preview_data.py
 python src/preprocess_data.py
-python src/train_pinn.py
+python src/train_pinn.py (flags: -c vanilla mass neighbors rigid interface)
 python src/predict_sequence.py
-python src/post_videos.py
+python src/post_videos.py (flags: -c vanilla mass neighbors rigid interface)
 python src/post_figures.py
 ```
 

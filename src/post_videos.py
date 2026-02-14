@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import List
+import argparse
 
 import imageio.v2 as imageio
 import matplotlib
@@ -65,6 +66,10 @@ def create_gnn_comparison_gif(
         y_min = min(y_min, pos_true[:, 1].min(), pos_pred[:, 1].min())
         y_max = max(y_max, pos_true[:, 1].max(), pos_pred[:, 1].max())
 
+    # Centreline positions in world coordinates (used both for plots and GIFs).
+    cx = 0.5 * (x_min + x_max)
+    cy = y_min + 0.25 * (y_max - y_min)
+
     frames: List[np.ndarray] = []
 
     fig, axes = plt.subplots(1, 2, figsize=(8, 4))
@@ -84,10 +89,16 @@ def create_gnn_comparison_gif(
             ax.set_xticks([])
             ax.set_yticks([])
 
+        # Ground truth panel with centreline crosshair
         sc_gt = ax_gt.scatter(pos_true[:, 0], pos_true[:, 1], c=atom_type, s=4, cmap="tab10")
+        ax_gt.axvline(cx, color="black", linestyle="--", linewidth=1.7, alpha=0.7)
+        ax_gt.axhline(cy, color="black", linestyle="--", linewidth=1.7, alpha=0.7)
         ax_gt.set_title("Ground truth")
 
+        # Prediction panel with the same centreline crosshair for consistency
         sc_pred = ax_pred.scatter(pos_pred[:, 0], pos_pred[:, 1], c=atom_type, s=4, cmap="tab10")
+        ax_pred.axvline(cx, color="black", linestyle="--", linewidth=1.7, alpha=0.7)
+        ax_pred.axhline(cy, color="black", linestyle="--", linewidth=1.7, alpha=0.7)
         ax_pred.set_title("GNN prediction")
 
         fig.suptitle(f"{name_tp1}")
@@ -115,7 +126,8 @@ def create_gnn_comparison_gif(
 
 def main() -> None:
     project_root = Path(__file__).parent.parent
-    configs = [
+
+    all_configs = [
         "vanilla",
         "mass",
         "neighbors",
@@ -123,6 +135,31 @@ def main() -> None:
         "interface",
         "all",
     ]
+
+    parser = argparse.ArgumentParser(description="Create GT vs prediction GIFs for selected configurations.")
+    parser.add_argument(
+        "-c",
+        "--config",
+        dest="configs",
+        nargs="+",
+        choices=all_configs,
+        help=(
+            "Name(s) of configurations to render GIFs for. "
+            "If omitted, GIFs are generated for all configurations. "
+            "Choices: vanilla, mass, neighbors, rigid, interface, all."
+        ),
+    )
+
+    args = parser.parse_args()
+
+    if args.configs:
+        configs = [name for name in all_configs if name in args.configs]
+    else:
+        configs = all_configs
+
+    if not configs:
+        print("No matching configurations to render (check --config names).")
+        return
 
     for name in configs:
         print("\n" + "-" * 80)

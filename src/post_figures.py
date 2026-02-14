@@ -29,8 +29,8 @@ def rasterize_points_to_grid(
     x_max: float,
     y_min: float,
     y_max: float,
-    nx: int = 64,
-    ny: int = 64,
+    nx: int = 128,
+    ny: int = 128,
 ) -> np.ndarray:
     """Rasterise 2D points onto a regular (ny, nx) grid as counts per cell.
 
@@ -70,8 +70,8 @@ def compute_centerlines_from_pairs(
     x_max: float,
     y_min: float,
     y_max: float,
-    nx: int = 64,
-    ny: int = 64,
+    nx: int = 128,
+    ny: int = 128,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """From a list of (GT, pred) pairs, build rasters and extract centre-lines.
 
@@ -104,7 +104,7 @@ def compute_centerlines_from_pairs(
 
     ny_grid, nx_grid = gt_norm.shape
     cx = nx_grid // 2
-    cy = ny_grid // 2
+    cy = int(0.25 * ny_grid)
 
     gt_vert = gt_norm[:, cx]
     pred_vert = pred_norm[:, cx]
@@ -166,8 +166,8 @@ def main() -> None:
         print("No valid prediction data found; nothing to plot.")
         return
 
-    nx = 64
-    ny = 64
+    nx = 128
+    ny = 128
 
     gt_vert_ref: np.ndarray | None = None
     gt_horiz_ref: np.ndarray | None = None
