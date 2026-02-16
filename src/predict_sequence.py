@@ -28,6 +28,8 @@ def generate_gnn_predictions(
     project_root: Path,
     experiment_name: str | None = None,
     radius: float = NEIGHBOR_RADIUS,
+    max_steps: int | None = None,
+    neighbor_overflow_limit: int | None = 80,
 ) -> Path | None:
     """Run the trained GNN on the validation split and save predictions.
 
@@ -74,13 +76,22 @@ def generate_gnn_predictions(
     first_frame = val_dataset.frames[first_name]
     atom_type = first_frame["atom_type"].to(device)
 
+    # Fixed wall positions (type 3) taken from the first frame.
+    wall_mask = atom_type == 3
+    wall_pos_fixed = first_frame["pos"].to(device)[wall_mask] if torch.any(wall_mask) else None
+
     # Start autoregressive rollout from the ground-truth positions of the first frame.
     pos_current = first_frame["pos"].to(device)
 
     pairs: List[Dict[str, torch.Tensor | str | int]] = []
 
+    num_steps = len(frame_names) - 1
+    if max_steps is not None:
+        num_steps = min(num_steps, max_steps)
+
     with torch.no_grad():
-        for step in range(len(frame_names) - 1):
+        for step in range(num_steps):
+            print("Step", step, flush=True)
             name_t = frame_names[step]
             name_tp1 = frame_names[step + 1]
 
@@ -103,6 +114,16 @@ def generate_gnn_predictions(
             nbrs.fit(coords)
             indices = nbrs.radius_neighbors(return_distance=False)
 
+            if neighbor_overflow_limit is not None:
+                max_neigh = max((len(neigh) for neigh in indices), default=0)
+                if max_neigh > neighbor_overflow_limit:
+                    print(
+                        f"Neighbor overflow at step {step}: max neighbors per particle = {max_neigh} "
+                        f"> limit {neighbor_overflow_limit}. Aborting rollout to avoid instability.",
+                        flush=True,
+                    )
+                    break
+
             row: List[int] = []
             col: List[int] = []
             for i, neigh in enumerate(indices):
@@ -118,6 +139,11 @@ def generate_gnn_predictions(
 
             # One-step prediction from current positions.
             preds_next = model(data_step)  # (N, 3)
+
+            # Clamp rigid-wall atoms (type 3) so they remain fixed in space.
+            if wall_pos_fixed is not None:
+                preds_next = preds_next.clone()
+                preds_next[wall_mask] = wall_pos_fixed
 
             # Store CPU copies for serialization.
             pos_t_cpu = pos_current.detach().cpu()
@@ -163,6 +189,7 @@ def main() -> None:
         "neighbors",
         "rigid",
         "interface",
+        "density",
         "all",
     ]
 
@@ -176,8 +203,20 @@ def main() -> None:
         help=(
             "Name(s) of configurations to generate predictions for. "
             "If omitted, predictions are generated for all configurations. "
-            "Choices: vanilla, mass, neighbors, rigid, interface, all."
+            "Choices: vanilla, mass, rigid, interface, all."
         ),
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Maximum number of autoregressive steps to roll out (per configuration).",
+    )
+    parser.add_argument(
+        "--neighbor-overflow-limit",
+        type=int,
+        default=80,
+        help="Abort rollout if any particle has more than this many neighbors in the radius graph.",
     )
 
     args = parser.parse_args()
@@ -195,7 +234,13 @@ def main() -> None:
         print("\n" + "-" * 80)
         print(f"Generating predictions for configuration: {name}")
         print("-" * 80)
-        generate_gnn_predictions(project_root, experiment_name=name)
+        generate_gnn_predictions(
+            project_root,
+            experiment_name=name,
+            radius=NEIGHBOR_RADIUS,
+            max_steps=args.max_steps,
+            neighbor_overflow_limit=args.neighbor_overflow_limit,
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI guard

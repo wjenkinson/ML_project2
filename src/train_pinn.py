@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 import argparse
+import math
 
 import torch
 from torch import nn
@@ -108,45 +109,65 @@ def interface_sharpness_loss(preds: torch.Tensor, batch) -> torch.Tensor:
     return torch.zeros((), dtype=preds.dtype, device=preds.device)
 
 
-def neighbor_constraint_loss(
+def density_constraint_loss(
     preds: torch.Tensor,
     batch,
-    max_neighbors: float = 8.0,
-    min_neighbors: float = 4.0,
-    max_diff_type_neighbors: float = 8.0,
-    radius: float | None = None,
+    radius: float,
+    rho_min: float = 950.0,
+    rho_max: float = 1050.0,
 ) -> torch.Tensor:
+    """SPH-style density constraint using a 2D cubic spline kernel.
+
+    Uses predicted positions ``preds`` to compute per-particle densities and
+    penalises values outside [rho_min, rho_max].
+    """
+
+    pos = preds[:, :2]
     edge_index = batch.edge_index
-    atom_type = batch.atom_type.to(preds.device)
     row = edge_index[0]
     col = edge_index[1]
 
-    pos_i = preds[row]
-    pos_j = preds[col]
-    d2 = torch.sum((pos_i - pos_j) ** 2, dim=-1)
+    h = radius / 2.0
+    if h <= 0.0:
+        return torch.zeros((), dtype=preds.dtype, device=preds.device)
 
-    if radius is not None:
-        r = torch.as_tensor(radius, dtype=preds.dtype, device=preds.device)
-    else:
-        r = torch.sqrt(d2.mean() + 1e-8)
+    # Particle mass consistent with physics_checks: rho0 * L0^2 with
+    # rho0=1000, L0=0.001.
+    mass_per_particle = 0.001
 
-    sigma2 = (0.5 * r) ** 2 + 1e-12
-    weights = torch.exp(-d2 / (2.0 * sigma2))
+    # Base density from self-contribution W(0, h).
+    sigma = 10.0 / (7.0 * math.pi * h * h)
+    w0 = sigma * 1.0
 
-    same_type = atom_type[row] == atom_type[col]
-    diff_mask = (~same_type).to(preds.dtype)
+    N = pos.shape[0]
+    rho = torch.full((N,), mass_per_particle * w0, dtype=preds.dtype, device=preds.device)
 
-    N = preds.shape[0]
-    soft_all = torch.zeros(N, device=preds.device, dtype=preds.dtype)
-    soft_diff = torch.zeros(N, device=preds.device, dtype=preds.dtype)
-    soft_all.scatter_add_(0, row, weights)
-    soft_diff.scatter_add_(0, row, weights * diff_mask)
+    # Distances between neighbours from predicted positions.
+    diff = pos[row] - pos[col]
+    dist = torch.sqrt(torch.sum(diff * diff, dim=-1) + 1e-12)
 
-    over_all = torch.relu(soft_all - max_neighbors)
-    under_all = torch.relu(min_neighbors - soft_all)
-    over_diff = torch.relu(soft_diff - max_diff_type_neighbors)
+    q = dist / h
+    w = torch.zeros_like(dist)
 
-    return over_all.pow(2).mean() + under_all.pow(2).mean() + over_diff.pow(2).mean()
+    mask1 = (q >= 0.0) & (q < 1.0)
+    if mask1.any():
+        q1 = q[mask1]
+        w[mask1] = 1.0 - 1.5 * q1 * q1 + 0.75 * q1 * q1 * q1
+
+    mask2 = (q >= 1.0) & (q < 2.0)
+    if mask2.any():
+        q2 = q[mask2]
+        w[mask2] = 0.25 * (2.0 - q2) ** 3
+
+    w = sigma * w
+
+    contrib = mass_per_particle * w
+    rho.scatter_add_(0, row, contrib)
+
+    under = torch.relu(torch.as_tensor(rho_min, dtype=preds.dtype, device=preds.device) - rho)
+    over = torch.relu(rho - torch.as_tensor(rho_max, dtype=preds.dtype, device=preds.device))
+
+    return (under.pow(2) + over.pow(2)).mean()
 
 
 def train(
@@ -155,9 +176,9 @@ def train(
     learning_rate: float = 1e-3,
     radius: float = NEIGHBOR_RADIUS,
     lambda_mass: float = 0.0,
-    lambda_neighbors: float = 0.0,
     lambda_rigid: float = 0.0,
     lambda_interface: float = 0.0,
+    lambda_density: float = 0.0,
     experiment_name: str | None = None,
 ) -> None:
     project_root = Path(__file__).parent.parent
@@ -205,23 +226,20 @@ def train(
 
             data_loss = criterion(preds, targets)
             mass_loss = mass_center_loss(preds, targets)
-            neighbor_loss = neighbor_constraint_loss(
+            interface_loss = interface_sharpness_loss(preds, batch)
+            density_loss = density_constraint_loss(
                 preds,
                 batch,
-                max_neighbors=8.0,
-                min_neighbors=4.0,
-                max_diff_type_neighbors=8.0,
                 radius=radius,
+                rho_min=950.0,
+                rho_max=1050.0,
             )
-            rigid_loss = rigid_wall_velocity_loss(preds, batch)
-            interface_loss = interface_sharpness_loss(preds, batch)
 
             loss = (
                 data_loss
                 + lambda_mass * mass_loss
-                + lambda_neighbors * neighbor_loss
-                + lambda_rigid * rigid_loss
                 + lambda_interface * interface_loss
+                + lambda_density * density_loss
             )
 
             loss.backward()
@@ -243,23 +261,20 @@ def train(
 
                 data_loss = criterion(preds, targets)
                 mass_loss = mass_center_loss(preds, targets)
-                neighbor_loss = neighbor_constraint_loss(
+                interface_loss = interface_sharpness_loss(preds, batch)
+                density_loss = density_constraint_loss(
                     preds,
                     batch,
-                    max_neighbors=8.0,
-                    min_neighbors=4.0,
-                    max_diff_type_neighbors=8.0,
                     radius=radius,
+                    rho_min=950.0,
+                    rho_max=1050.0,
                 )
-                rigid_loss = rigid_wall_velocity_loss(preds, batch)
-                interface_loss = interface_sharpness_loss(preds, batch)
 
                 loss = (
                     data_loss
                     + lambda_mass * mass_loss
-                    + lambda_neighbors * neighbor_loss
-                    + lambda_rigid * rigid_loss
                     + lambda_interface * interface_loss
+                    + lambda_density * density_loss
                 )
 
                 val_loss += loss.item()
@@ -272,9 +287,9 @@ def train(
             f"train_loss={avg_train_loss:.6f} | "
             f"val_loss={avg_val_loss:.6f} | "
             f"lambda_mass={lambda_mass} | "
-            f"lambda_neighbors={lambda_neighbors} | "
             f"lambda_rigid={lambda_rigid} | "
-            f"lambda_interface={lambda_interface}"
+            f"lambda_interface={lambda_interface} | "
+            f"lambda_density={lambda_density}"
         )
 
         if avg_val_loss < best_val_loss:
@@ -291,16 +306,16 @@ def main() -> None:
     CLI flags, for example:
 
     - ``python -m src.train_pinn -c vanilla``
-    - ``python -m src.train_pinn -c vanilla mass neighbors``
+    - ``python -m src.train_pinn -c vanilla mass density``
     """
 
     all_configs = [
-        {"name": "vanilla", "lambda_mass": 0.0, "lambda_neighbors": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0},
-        {"name": "mass", "lambda_mass": 1e-3, "lambda_neighbors": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0},
-        {"name": "neighbors", "lambda_mass": 0.0, "lambda_neighbors": 1e-4, "lambda_rigid": 0.0, "lambda_interface": 0.0},
-        {"name": "rigid", "lambda_mass": 0.0, "lambda_neighbors": 0.0, "lambda_rigid": 2e-1, "lambda_interface": 0.0},
-        {"name": "interface", "lambda_mass": 0.0, "lambda_neighbors": 0.0, "lambda_rigid": 0.0, "lambda_interface": 1e-4},
-        {"name": "all", "lambda_mass": 1e-3, "lambda_neighbors": 1e-4, "lambda_rigid": 1e-4, "lambda_interface": 1e-4},
+        {"name": "vanilla", "lambda_mass": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0, "lambda_density": 0.0},
+        {"name": "mass", "lambda_mass": 1e-3, "lambda_rigid": 0.0, "lambda_interface": 0.0, "lambda_density": 0.0},
+        {"name": "rigid", "lambda_mass": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0, "lambda_density": 0.0},
+        {"name": "interface", "lambda_mass": 0.0, "lambda_rigid": 0.0, "lambda_interface": 1e-4, "lambda_density": 0.0},
+        {"name": "density", "lambda_mass": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0, "lambda_density": 1e-5},
+        {"name": "all", "lambda_mass": 1e-3, "lambda_rigid": 0.0, "lambda_interface": 1e-4, "lambda_density": 1e-5},
     ]
 
     parser = argparse.ArgumentParser(description="Train physics-informed GNN configurations.")
@@ -313,7 +328,7 @@ def main() -> None:
         help=(
             "Name(s) of configurations to train. "
             "If omitted, all configurations are trained. "
-            "Choices: vanilla, mass, neighbors, rigid, interface, all."
+            "Choices: vanilla, mass, rigid, interface, density, all."
         ),
     )
 
@@ -335,9 +350,9 @@ def main() -> None:
 
         train(
             lambda_mass=cfg["lambda_mass"],
-            lambda_neighbors=cfg["lambda_neighbors"],
             lambda_rigid=cfg["lambda_rigid"],
             lambda_interface=cfg["lambda_interface"],
+            lambda_density=cfg["lambda_density"],
             experiment_name=cfg["name"],
         )
 

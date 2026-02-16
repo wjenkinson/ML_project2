@@ -26,7 +26,7 @@ from sklearn.neighbors import NearestNeighbors
 DATA_DIR_NAME = "data"
 SPLITS_SUBDIR = "splits"
 NEIGHBOR_CACHE_SUBDIR = "neighbors"
-NEIGHBOR_RADIUS = 0.0015
+NEIGHBOR_RADIUS = 0.002
 
 
 @dataclass

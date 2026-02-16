@@ -130,9 +130,9 @@ def main() -> None:
     all_configs = [
         "vanilla",
         "mass",
-        "neighbors",
         "rigid",
         "interface",
+        "density",
         "all",
     ]
 
@@ -146,7 +146,7 @@ def main() -> None:
         help=(
             "Name(s) of configurations to render GIFs for. "
             "If omitted, GIFs are generated for all configurations. "
-            "Choices: vanilla, mass, neighbors, rigid, interface, all."
+            "Choices: vanilla, mass, rigid, interface, all."
         ),
     )
 

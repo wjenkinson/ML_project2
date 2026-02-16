@@ -40,7 +40,7 @@
 
 ---
 
-#### **Phase 2: Hybrid Model Design**
+#### (COMPLETE) **Phase 2: Hybrid Model Design**
 **Description:** Combine a PDE solver with a graph neural network to predict frames.
 
 **Tasks:**
@@ -56,7 +56,7 @@
 
 ---
 
-#### **Phase 3: Training and Evaluation**
+#### (COMPLETE) **Phase 3: Training and Evaluation**
 **Description:** Train the model and evaluate its performance with physics constraints.
 
 **Tasks:**
