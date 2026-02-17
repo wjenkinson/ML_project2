@@ -59,14 +59,14 @@ flowchart TD
 
 This project focuses on comparing **ground truth LAMMPS frames** with predictions from a **physics-informed hybrid PDE + GNN model**.
 
-```text
-[GIF placeholder]
-Ground truth vs physics-informed prediction over a sequence of frames.
-```
+For the main demos we use **two GIFs** produced by `post_videos.py`:
 
-In the final version, this section will embed a GIF (e.g. `output/prediction_vs_gt_pinn.gif`) showing:
+- `output/prediction_vs_gt_pinn_vanilla.gif` – baseline model without explicit density constraint.
+- `output/prediction_vs_gt_pinn_density.gif` – model trained with an SPH-style density constraint.
+
+Each GIF shows:
 - Left: ground truth simulation.
-- Right: model prediction.
+- Right: model prediction for the selected configuration.
 
 ---
 
@@ -77,9 +77,9 @@ In the final version, this section will embed a GIF (e.g. `output/prediction_vs_
 Quantitative comparison of ground truth vs prediction.
 ```
 
-This section will show one or more figures (e.g. `output/quantitative_comparison_pinn.png`) that summarize:
+This section will show one or more figures that summarize:
 - Error metrics between ground truth and predictions.
-- One or two representative profiles (e.g. centreline cuts) comparing shapes and interfaces.
+- On two section cuts comparing shapes and interfaces.
 
 ---
 
@@ -99,9 +99,9 @@ Once the implementation is complete, the results shown above can be reproduced w
 ```bash
 python src/preview_data.py
 python src/preprocess_data.py
-python src/train_pinn.py (flags: -c vanilla mass neighbors rigid interface)
+python src/train_pinn.py (flags: -c vanilla mass rigid interface density)
 python src/predict_sequence.py
-python src/post_videos.py (flags: -c vanilla mass neighbors rigid interface)
+python src/post_videos.py (flags: -c vanilla mass rigid interface density)
 python src/post_figures.py
 ```
 
