@@ -75,16 +75,20 @@ Each GIF shows:
 
 ### Comments
 
+(See postmortem.md for more details)
+
 Work has revealed several major upgrade opportunities:
 
 1. GNN poorly leveraging the data:
  - Raw atom coordinates are being used instead of relative positions.
  - Velocities are not being used at all.
- - Redundant training on rigid atoms
- - 
+ - Redundant training on rigid atoms.
+ - Mass conservation is trivially satisfied by the GNN, needs to be removed.
 
-2. 
-
+2. Data poorly labelled and could supplemented with additional metadata, inhibits generalization to other problems:
+ - "Type 1", "Type 2", "Type 3" not general labels, needs to be "liquid", "solid", "wall".
+ - In addition, consider labels and flags such as "newtonian", viscosity(Pa.s) = "1" etc.
+ - Not calculating/checking forces, energies, etc.
 ---
 
 ## Quantitative Comparison
