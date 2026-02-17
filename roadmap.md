@@ -73,7 +73,7 @@
 
 ---
 
-#### **Phase 4: Project Retrospective**
+#### (COMPLETE) **Phase 4: Project Retrospective**
 **Description:** Review the project to solidify understanding and identify next steps.
 
 **Tasks:**
@@ -87,3 +87,40 @@
 
 **Failure Criteria:**
 - No actionable insights or next steps are identified.
+
+---
+### Project 2 Extension: Core GNN improvements + tighter physics-informed loss
+
+#### Phase 5: Rework the project into a minimal PINNs
+**Description:** Over planned for the physics constraints without a solid foundation for the GNN architecture. Reduce the scope of the project to a minimal PINNs implementation with just one constraint (density).
+
+**Tasks**
+ - Remove rigid, interface, mass constraints, propagating changes through the code base
+ - Go through physics check and remove any that are not needed
+ - Update physics.md
+
+**Success Criteria:**
+ - Modules sizes are mostly below 200 lines, 500 line hard limit
+ - More intuitive code structure, easier to read and skim
+
+**Failure Criteria:**
+ - Massive code files persist
+ - Cannot navigate codebase
+
+#### Phase 6:
+**Description:** Improve the upstream data usage to better leverage GNN architecture. Shrink the scope for physics-informed loss, focusing on a density constraint. 
+
+**Tasks:**
+- Implement relative positions 
+- Implement velocities 
+- Implement general atom labels
+
+**Success Criteria:**
+- Clear identifable improvements made to the trained model after implementing the above changes
+- Unlock of the physics-informed loss
+- Generality of the model demostrated (even to a limited capacity)
+
+**Failure Criteria:**
+- Predicted GIFs are not meaningfully different from the baseline
+- Models fail to respect physical constraints
+- no meaningful generality demonstrated

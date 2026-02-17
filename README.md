@@ -75,7 +75,7 @@ Each GIF shows:
 
 ### Comments
 
-(See postmortem.md for more details)
+(See link to [postmortem](postmortem.md) for more details)
 
 Work has revealed several major upgrade opportunities:
 
