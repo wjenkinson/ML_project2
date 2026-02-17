@@ -61,12 +61,29 @@ This project focuses on comparing **ground truth LAMMPS frames** with prediction
 
 For the main demos we use **two GIFs** produced by `post_videos.py`:
 
-- `output/prediction_vs_gt_pinn_vanilla.gif` – baseline model without explicit density constraint.
-- `output/prediction_vs_gt_pinn_density.gif` – model trained with an SPH-style density constraint.
+![Simulation GIF](output/prediction_vs_gt_pinn_vanilla.gif)
+
+Baseline model without explicit density constraint.
+
+![Simulation GIF](output/prediction_vs_gt_pinn_density.gif)
+
+Model trained with an SPH-style density constraint.
 
 Each GIF shows:
 - Left: ground truth simulation.
 - Right: model prediction for the selected configuration.
+
+### Comments
+
+Work has revealed several major upgrade opportunities:
+
+1. GNN poorly leveraging the data:
+ - Raw atom coordinates are being used instead of relative positions.
+ - Velocities are not being used at all.
+ - Redundant training on rigid atoms
+ - 
+
+2. 
 
 ---
 
