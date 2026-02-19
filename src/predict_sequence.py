@@ -3,10 +3,10 @@
 This script:
 
 - Loads the best ``SimpleGnnPredictor`` checkpoint from ``output/``.
-- Runs it over the validation ``LammpsGraphDataset`` to predict positions at
-  t+1 given positions at t.
-- Saves ground-truth and predicted positions for each (t, t+1) pair to a
-  torch file in ``output/``, for consumption by ``post_videos.py``.
+- Runs autoregressive rollout over the validation split.
+- The model predicts DISPLACEMENTS; positions are computed as:
+  pos(t+1) = pos(t) + displacement_pred
+- Saves ground-truth and predicted positions to a torch file for post_videos.py.
 """
 
 from __future__ import annotations
@@ -16,10 +16,15 @@ from typing import Dict, List
 import argparse
 
 import torch
-from sklearn.neighbors import NearestNeighbors
 from torch_geometric.data import Data
 
-from .graph_dataset import LammpsGraphDataset
+from .graph_dataset import (
+    LammpsGraphDataset,
+    NODE_FEATURE_DIM,
+    build_radius_graph_pbc_x,
+    minimum_image_rel_pos,
+    BOX_LX,
+)
 from .preprocess_data import NEIGHBOR_RADIUS
 from .train_pinn import SimpleGnnPredictor
 
@@ -61,8 +66,13 @@ def generate_gnn_predictions(
         print("Validation dataset has no frame pairs; nothing to predict.")
         return None
 
-    # Load model
-    model = SimpleGnnPredictor(in_channels=4, hidden_channels=64, num_layers=2).to(device)
+    # Load model (new architecture with edge features)
+    model = SimpleGnnPredictor(
+        in_channels=NODE_FEATURE_DIM,  # [is_fluid, is_solid, is_wall, vx, vy]
+        hidden_channels=64,
+        edge_channels=4,  # [dx, dy, dz, dist]
+        num_layers=3,
+    ).to(device)
     state_dict = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(state_dict)
     model.eval()
@@ -80,8 +90,20 @@ def generate_gnn_predictions(
     wall_mask = atom_type == 3
     wall_pos_fixed = first_frame["pos"].to(device)[wall_mask] if torch.any(wall_mask) else None
 
+    # Piston (type 4): moves down 0.001 per frame from initial position.
+    piston_mask = atom_type == 4
+    piston_pos_initial = first_frame["pos"].to(device)[piston_mask].clone() if torch.any(piston_mask) else None
+    piston_dy_per_frame = -0.0015  # moves down
+
+    # One-hot type encoding (constant across rollout)
+    is_fluid = (atom_type == 1).to(torch.float32).unsqueeze(-1)
+    is_solid = (atom_type == 2).to(torch.float32).unsqueeze(-1)
+    is_wall = (atom_type == 3).to(torch.float32).unsqueeze(-1)
+    is_piston = (atom_type == 4).to(torch.float32).unsqueeze(-1)
+
     # Start autoregressive rollout from the ground-truth positions of the first frame.
     pos_current = first_frame["pos"].to(device)
+    vel_current = first_frame["vel"].to(device)  # initial velocities
 
     pairs: List[Dict[str, torch.Tensor | str | int]] = []
 
@@ -99,23 +121,18 @@ def generate_gnn_predictions(
             frame_tp1 = val_dataset.frames[name_tp1]
             pos_true_next = frame_tp1["pos"].to(device)
 
-            # Build node features from current (possibly predicted) positions.
-            x = torch.cat(
-                [
-                    pos_current,
-                    atom_type.to(dtype=torch.float32).unsqueeze(-1),
-                ],
-                dim=-1,
-            )
+            # Build node features: [is_fluid, is_solid, is_wall, is_piston, vx, vy]
+            x = torch.cat([is_fluid, is_solid, is_wall, is_piston, vel_current], dim=-1)  # (N, 6)
 
-            # Build radius-based neighbourhood graph on the current positions.
+            # Build radius-based neighbourhood graph with periodic BC in x
             coords = pos_current.cpu().numpy()
-            nbrs = NearestNeighbors(radius=radius, algorithm="ball_tree")
-            nbrs.fit(coords)
-            indices = nbrs.radius_neighbors(return_distance=False)
+            row, col = build_radius_graph_pbc_x(coords, radius)
 
+            # Check neighbor overflow (approximate via edge count per node)
             if neighbor_overflow_limit is not None:
-                max_neigh = max((len(neigh) for neigh in indices), default=0)
+                from collections import Counter
+                neigh_counts = Counter(row)
+                max_neigh = max(neigh_counts.values(), default=0)
                 if max_neigh > neighbor_overflow_limit:
                     print(
                         f"Neighbor overflow at step {step}: max neighbors per particle = {max_neigh} "
@@ -124,26 +141,35 @@ def generate_gnn_predictions(
                     )
                     break
 
-            row: List[int] = []
-            col: List[int] = []
-            for i, neigh in enumerate(indices):
-                for j in neigh:
-                    if i == j:
-                        continue  # no self-loops
-                    row.append(i)
-                    col.append(j)
-
             edge_index = torch.tensor([row, col], dtype=torch.long, device=device)
 
-            data_step = Data(x=x, edge_index=edge_index)
+            # Compute edge attributes: relative positions + distance (with PBC in x)
+            if edge_index.numel() > 0:
+                src, dst = edge_index[0], edge_index[1]
+                rel_pos = minimum_image_rel_pos(pos_current[src], pos_current[dst], Lx=BOX_LX)
+                dist = torch.norm(rel_pos, dim=-1, keepdim=True)
+                edge_attr = torch.cat([rel_pos, dist], dim=-1)
+            else:
+                edge_attr = torch.zeros((0, 4), dtype=torch.float32, device=device)
 
-            # One-step prediction from current positions.
-            preds_next = model(data_step)  # (N, 3)
+            data_step = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=pos_current)
+
+            # Model predicts DISPLACEMENT, not absolute position
+            displacement_pred = model(data_step)  # (N, 3)
+
+            # Compute next positions from displacement
+            preds_next = pos_current + displacement_pred  # (N, 3)
 
             # Clamp rigid-wall atoms (type 3) so they remain fixed in space.
             if wall_pos_fixed is not None:
                 preds_next = preds_next.clone()
                 preds_next[wall_mask] = wall_pos_fixed
+
+            # Clamp piston atoms (type 4) to prescribed trajectory: initial + step * dy.
+            if piston_pos_initial is not None:
+                piston_pos_now = piston_pos_initial.clone()
+                piston_pos_now[:, 1] += piston_dy_per_frame * (step + 1)
+                preds_next[piston_mask] = piston_pos_now
 
             # Store CPU copies for serialization.
             pos_t_cpu = pos_current.detach().cpu()
@@ -165,6 +191,17 @@ def generate_gnn_predictions(
             # Use the prediction as the starting point for the next timestep.
             pos_current = preds_next
 
+            # Update velocity estimate from displacement (assumes dt is implicit)
+            # displacement ≈ velocity * dt, so we use displacement[:, :2] as velocity proxy
+            vel_current = displacement_pred[:, :2].clone()
+            # Walls have zero velocity
+            if wall_pos_fixed is not None:
+                vel_current[wall_mask] = 0.0
+            # Piston has prescribed downward velocity
+            if piston_pos_initial is not None:
+                vel_current[piston_mask, 0] = 0.0
+                vel_current[piston_mask, 1] = piston_dy_per_frame
+
     if experiment_name:
         pred_path = output_dir / f"pred_sequences_pinn_{experiment_name}.pt"
     else:
@@ -185,12 +222,9 @@ def main() -> None:
 
     all_configs = [
         "vanilla",
-        "mass",
-        "neighbors",
-        "rigid",
-        "interface",
         "density",
-        "all",
+        "floor",
+        "density_floor",
     ]
 
     parser = argparse.ArgumentParser(description="Generate validation predictions for selected configurations.")
@@ -202,8 +236,8 @@ def main() -> None:
         choices=all_configs,
         help=(
             "Name(s) of configurations to generate predictions for. "
-            "If omitted, predictions are generated for all configurations. "
-            "Choices: vanilla, mass, rigid, interface, all."
+            "If omitted, predictions are generated for both configurations. "
+            "Choices: vanilla, density."
         ),
     )
     parser.add_argument(

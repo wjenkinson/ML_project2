@@ -5,8 +5,7 @@ Current implementation:
 - Rasterise particle positions from ``pred_sequences_pinn_*.pt`` prediction
   files onto a regular 2D grid.
 - Extract vertical and horizontal centreline profiles from the last frame.
-- Compare these profiles across different experiment configurations
-  (e.g. vanilla, mass, neighbours, all) using a shared rasterisation.
+- Compare vanilla and density configurations using a shared rasterisation.
 """
 
 from __future__ import annotations

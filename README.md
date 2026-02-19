@@ -64,12 +64,6 @@ For the main demos we use **two GIFs** produced by `post_videos.py`:
 ![Simulation GIF](output/prediction_vs_gt_pinn_vanilla.gif)
 
 Baseline model without explicit density constraint.
-
-![Simulation GIF](output/prediction_vs_gt_pinn_density.gif)
-
-Model trained with an SPH-style density constraint.
-
-Each GIF shows:
 - Left: ground truth simulation.
 - Right: model prediction for the selected configuration.
 

@@ -91,7 +91,7 @@
 ---
 ### Project 2 Extension: Core GNN improvements + tighter physics-informed loss
 
-#### Phase 5: Rework the project into a minimal PINNs
+#### (COMPLETE) Phase 5: Rework the project into a minimal PINNs
 **Description:** Over planned for the physics constraints without a solid foundation for the GNN architecture. Reduce the scope of the project to a minimal PINNs implementation with just one constraint (density).
 
 **Tasks**
@@ -100,14 +100,14 @@
  - Update physics.md
 
 **Success Criteria:**
- - Modules sizes are mostly below 200 lines, 500 line hard limit
+ - Modules sizes are mostly below 200 lines, 300 line hard limit
  - More intuitive code structure, easier to read and skim
 
 **Failure Criteria:**
  - Massive code files persist
  - Cannot navigate codebase
 
-#### Phase 6:
+#### (COMPLETE) Phase 6: Improve upstream data usage
 **Description:** Improve the upstream data usage to better leverage GNN architecture. Shrink the scope for physics-informed loss, focusing on a density constraint. 
 
 **Tasks:**
@@ -118,6 +118,40 @@
 **Success Criteria:**
 - Clear identifable improvements made to the trained model after implementing the above changes
 - Unlock of the physics-informed loss
+- Generality of the model demostrated (even to a limited capacity)
+
+**Failure Criteria:**
+- Predicted GIFs are not meaningfully different from the baseline
+- Models fail to respect physical constraints
+- no meaningful generality demonstrated
+
+### Project 2 Further Extension: Multistep training loss and hyperparameter optimization
+
+#### Phase 7: Multistep training loss
+**Description:** Implement multistep training loss and hyperparameter optimization to improve model performance.
+
+**Tasks:**
+- Implement multistep training loss
+- Retrain the core GNN
+
+**Success Criteria:**
+- Clear identifable improvements made to the trained model after implementing the above changes
+- Generality of the model demostrated (even to a limited capacity)
+
+**Failure Criteria:**
+- Predicted GIFs are not meaningfully different from the baseline
+- Models fail to respect physical constraints
+- no meaningful generality demonstrated
+
+#### Phase 8: Hyperparameter optimization
+**Description:** Hyperparameter optimization to improve model performance.
+
+**Tasks:**
+- Implement hyperparameter optimization
+- Retrain the core GNN
+
+**Success Criteria:**
+- Clear identifable improvements made to the trained model after implementing the above changes
 - Generality of the model demostrated (even to a limited capacity)
 
 **Failure Criteria:**

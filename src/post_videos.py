@@ -7,6 +7,12 @@ side-by-side scatter plots of:
 
 - Left: ground-truth particle positions at t+1.
 - Right: GNN-predicted positions at t+1.
+
+Atom type colors:
+- Type 1 (fluid): blue
+- Type 2 (solid): orange
+- Type 3 (wall): gray
+- Type 4 (piston): red
 """
 
 from __future__ import annotations
@@ -89,14 +95,18 @@ def create_gnn_comparison_gif(
             ax.set_xticks([])
             ax.set_yticks([])
 
+        # Map atom types to colors: 1=blue, 2=orange, 3=gray, 4=red
+        type_colors = {1: "tab:blue", 2: "tab:orange", 3: "gray", 4: "tab:red"}
+        colors = [type_colors.get(t, "black") for t in atom_type]
+
         # Ground truth panel with centreline crosshair
-        sc_gt = ax_gt.scatter(pos_true[:, 0], pos_true[:, 1], c=atom_type, s=4, cmap="tab10")
+        sc_gt = ax_gt.scatter(pos_true[:, 0], pos_true[:, 1], c=colors, s=4)
         ax_gt.axvline(cx, color="black", linestyle="--", linewidth=1.7, alpha=0.7)
         ax_gt.axhline(cy, color="black", linestyle="--", linewidth=1.7, alpha=0.7)
         ax_gt.set_title("Ground truth")
 
         # Prediction panel with the same centreline crosshair for consistency
-        sc_pred = ax_pred.scatter(pos_pred[:, 0], pos_pred[:, 1], c=atom_type, s=4, cmap="tab10")
+        sc_pred = ax_pred.scatter(pos_pred[:, 0], pos_pred[:, 1], c=colors, s=4)
         ax_pred.axvline(cx, color="black", linestyle="--", linewidth=1.7, alpha=0.7)
         ax_pred.axhline(cy, color="black", linestyle="--", linewidth=1.7, alpha=0.7)
         ax_pred.set_title("GNN prediction")
@@ -129,11 +139,9 @@ def main() -> None:
 
     all_configs = [
         "vanilla",
-        "mass",
-        "rigid",
-        "interface",
         "density",
-        "all",
+        "floor",
+        "density_floor",
     ]
 
     parser = argparse.ArgumentParser(description="Create GT vs prediction GIFs for selected configurations.")
@@ -145,8 +153,8 @@ def main() -> None:
         choices=all_configs,
         help=(
             "Name(s) of configurations to render GIFs for. "
-            "If omitted, GIFs are generated for all configurations. "
-            "Choices: vanilla, mass, rigid, interface, all."
+            "If omitted, GIFs are generated for both configurations. "
+            "Choices: vanilla, density."
         ),
     )
 

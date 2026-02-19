@@ -1,12 +1,14 @@
-"""Train a simple GNN baseline with a mass-conservation style constraint.
+"""Train a GNN with relative-position edge features and displacement output.
 
-This adapts the Project 1 ``train_GNN`` script to the current repo layout and
-2D SPH data. The model predicts next-step particle positions given current
-positions and atom types, and the training loss combines:
+The model predicts particle DISPLACEMENTS (not absolute positions) using:
+- Node features: atom type only (translation-invariant)
+- Edge features: relative position vectors [Δx, Δy, Δz, ||r||]
 
-- A data term (MSE on positions).
-- A simple "mass" term based on center-of-mass consistency between predicted
-  and target positions (treating each particle as unit mass).
+At inference: pos(t+1) = pos(t) + predicted_displacement
+
+Training loss combines:
+- A data term (MSE on displacements).
+- An optional SPH-style density constraint on the resulting absolute positions.
 """
 
 from __future__ import annotations
@@ -19,98 +21,109 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch_geometric.loader import DataLoader
-from torch_geometric.nn import GCNConv
+from torch_geometric.nn import MessagePassing
 
-from .graph_dataset import LammpsGraphDataset
+from .graph_dataset import LammpsGraphDataset, NODE_FEATURE_DIM
 from .preprocess_data import NEIGHBOR_RADIUS
 
 
-class SimpleGnnPredictor(nn.Module):
-    """Simple 2-layer GNN for next-step particle position prediction.
+class EdgeConvLayer(MessagePassing):
+    """Message passing layer that uses edge features (relative positions).
 
-    Node features: [x, y, z, type_id]
-    Target: positions at t+1 for each particle (x, y, z).
+    For each edge (i -> j), the message is computed from:
+    - Source node embedding
+    - Edge attributes (relative position + distance)
+
+    Messages are summed at each receiver node and combined with a residual.
+    """
+
+    def __init__(self, hidden_channels: int, edge_channels: int = 4) -> None:
+        super().__init__(aggr="mean")
+        # MLP that processes [src_embedding, edge_attr] -> message
+        self.edge_mlp = nn.Sequential(
+            nn.Linear(hidden_channels + edge_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, hidden_channels),
+        )
+        # Update MLP after aggregation
+        self.update_mlp = nn.Sequential(
+            nn.Linear(hidden_channels * 2, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, hidden_channels),
+        )
+
+    def forward(self, x, edge_index, edge_attr):
+        # x: (N, hidden), edge_attr: (E, edge_channels)
+        out = self.propagate(edge_index, x=x, edge_attr=edge_attr)
+        # Combine with original embedding (residual-style)
+        out = self.update_mlp(torch.cat([x, out], dim=-1))
+        return x + out  # residual connection
+
+    def message(self, x_j, edge_attr):
+        # x_j: source node features, edge_attr: relative positions
+        return self.edge_mlp(torch.cat([x_j, edge_attr], dim=-1))
+
+
+class SimpleGnnPredictor(nn.Module):
+    """GNN for predicting particle displacements using relative positions.
+
+    Node features: [type_id] (1 channel) - position-independent
+    Edge features: [Δx, Δy, Δz, ||r||] (4 channels) - relative geometry
+    Output: displacement (dx, dy, dz) per particle
+
+    Architecture:
+    1. Embed type_id to hidden dimension
+    2. Apply EdgeConvLayers that use relative positions
+    3. Predict displacement per node
     """
 
     def __init__(
         self,
-        in_channels: int = 4,
+        in_channels: int = 1,
         hidden_channels: int = 64,
-        num_layers: int = 2,
+        edge_channels: int = 4,
+        num_layers: int = 3,
     ) -> None:
         super().__init__()
 
         if num_layers < 1:
             raise ValueError("num_layers must be >= 1")
 
-        self.convs = nn.ModuleList()
-        self.convs.append(GCNConv(in_channels, hidden_channels))
-        for _ in range(num_layers - 1):
-            self.convs.append(GCNConv(hidden_channels, hidden_channels))
+        # Embed node features (type_id) to hidden dimension
+        self.node_embed = nn.Linear(in_channels, hidden_channels)
 
-        self.out_lin = nn.Linear(hidden_channels, 3)  # predict (x, y, z) at t+1
+        # Message passing layers with edge features
+        self.convs = nn.ModuleList()
+        for _ in range(num_layers):
+            self.convs.append(EdgeConvLayer(hidden_channels, edge_channels))
+
+        # Output: predict displacement (dx, dy, dz)
+        self.out_lin = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, 3),
+        )
 
     def forward(self, data):  # type: ignore[override]
-        x, edge_index = data.x, data.edge_index
+        x = data.x  # (N, 1) - type_id
+        edge_index = data.edge_index
+        edge_attr = data.edge_attr  # (E, 4) - relative positions + distance
 
+        # Embed node features
+        x = self.node_embed(x)
+        x = F.relu(x)
+
+        # Message passing with edge features
         for conv in self.convs:
-            x = conv(x, edge_index)
-            x = F.relu(x)
+            x = conv(x, edge_index, edge_attr)
 
-        pred = self.out_lin(x)
-        return pred
-
-
-def mass_center_loss(preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
-    """Center-of-mass consistency loss as a simple mass proxy.
-
-    With unit mass per particle, the center of mass is the mean position. This
-    loss encourages the predicted center of mass to match the target one.
-    """
-
-    com_pred = preds.mean(dim=0)
-    com_true = targets.mean(dim=0)
-    return F.mse_loss(com_pred, com_true)
-
-
-def rigid_wall_velocity_loss(preds: torch.Tensor, batch) -> torch.Tensor:
-    """Rigid-wall velocity constraint based on predicted displacement.
-
-    Rigid walls (type 3) should ideally have zero velocity. We approximate
-    velocity using the displacement between positions at t (``batch.pos``)
-    and predicted positions at t+1 (``preds``), and penalise motion of type-3
-    atoms.
-    """
-
-    atom_type = batch.atom_type.to(preds.device)
-    pos_t = batch.pos.to(preds.device)
-
-    wall_mask = atom_type == 3
-    if not torch.any(wall_mask):
-        return torch.zeros((), dtype=preds.dtype, device=preds.device)
-
-    disp = preds - pos_t
-    wall_disp = disp[wall_mask]
-
-    if wall_disp.numel() == 0:
-        return torch.zeros((), dtype=preds.dtype, device=preds.device)
-
-    return wall_disp.pow(2).sum(dim=-1).mean()
-
-
-def interface_sharpness_loss(preds: torch.Tensor, batch) -> torch.Tensor:
-    """Stub for interface sharpness constraint.
-
-    Intended to penalise overly mixed interfaces between phases (types 1 and 2).
-    This stub returns zero for now and will be implemented later.
-    """
-
-    # Placeholder: no contribution yet.
-    return torch.zeros((), dtype=preds.dtype, device=preds.device)
+        # Predict displacement
+        displacement = self.out_lin(x)
+        return displacement
 
 
 def density_constraint_loss(
-    preds: torch.Tensor,
+    displacement_preds: torch.Tensor,
     batch,
     radius: float,
     rho_min: float = 950.0,
@@ -118,18 +131,20 @@ def density_constraint_loss(
 ) -> torch.Tensor:
     """SPH-style density constraint using a 2D cubic spline kernel.
 
-    Uses predicted positions ``preds`` to compute per-particle densities and
-    penalises values outside [rho_min, rho_max].
+    Computes absolute positions from displacement predictions, then penalises
+    local densities outside [rho_min, rho_max].
     """
 
-    pos = preds[:, :2]
+    # Compute absolute positions from displacement
+    abs_pos = batch.pos + displacement_preds
+    pos = abs_pos[:, :2]
     edge_index = batch.edge_index
     row = edge_index[0]
     col = edge_index[1]
 
     h = radius / 2.0
     if h <= 0.0:
-        return torch.zeros((), dtype=preds.dtype, device=preds.device)
+        return torch.zeros((), dtype=displacement_preds.dtype, device=displacement_preds.device)
 
     # Particle mass consistent with physics_checks: rho0 * L0^2 with
     # rho0=1000, L0=0.001.
@@ -140,7 +155,7 @@ def density_constraint_loss(
     w0 = sigma * 1.0
 
     N = pos.shape[0]
-    rho = torch.full((N,), mass_per_particle * w0, dtype=preds.dtype, device=preds.device)
+    rho = torch.full((N,), mass_per_particle * w0, dtype=pos.dtype, device=pos.device)
 
     # Distances between neighbours from predicted positions.
     diff = pos[row] - pos[col]
@@ -164,21 +179,51 @@ def density_constraint_loss(
     contrib = mass_per_particle * w
     rho.scatter_add_(0, row, contrib)
 
-    under = torch.relu(torch.as_tensor(rho_min, dtype=preds.dtype, device=preds.device) - rho)
-    over = torch.relu(rho - torch.as_tensor(rho_max, dtype=preds.dtype, device=preds.device))
+    under = torch.relu(torch.as_tensor(rho_min, dtype=pos.dtype, device=pos.device) - rho)
+    over = torch.relu(rho - torch.as_tensor(rho_max, dtype=pos.dtype, device=pos.device))
 
     return (under.pow(2) + over.pow(2)).mean()
 
 
+# Floor constraint: rigid horizontal plate at this y-coordinate.
+FLOOR_Y = -0.07
+
+
+def floor_constraint_loss(
+    displacement_preds: torch.Tensor,
+    batch,
+    floor_y: float = FLOOR_Y,
+) -> torch.Tensor:
+    """Penalize fluid nodes (type 1) that fall below the floor.
+
+    There is a rigid horizontal plate at y = floor_y; nothing should go below it.
+    """
+
+    # Compute absolute positions from displacement
+    abs_pos = batch.pos + displacement_preds
+    y_pos = abs_pos[:, 1]
+
+    # Get fluid mask (type 1)
+    atom_type = batch.atom_type
+    fluid_mask = atom_type == 1
+
+    # Penalize fluid nodes below the floor
+    y_fluid = y_pos[fluid_mask]
+    violation = torch.relu(floor_y - y_fluid)  # positive if below floor
+
+    if violation.numel() == 0:
+        return torch.zeros((), dtype=displacement_preds.dtype, device=displacement_preds.device)
+
+    return violation.pow(2).mean()
+
+
 def train(
-    epochs: int = 10,
+    epochs: int = 3,
     batch_size: int = 1,
     learning_rate: float = 1e-3,
     radius: float = NEIGHBOR_RADIUS,
-    lambda_mass: float = 0.0,
-    lambda_rigid: float = 0.0,
-    lambda_interface: float = 0.0,
     lambda_density: float = 0.0,
+    lambda_floor: float = 0.0,
     experiment_name: str | None = None,
 ) -> None:
     project_root = Path(__file__).parent.parent
@@ -199,7 +244,12 @@ def train(
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    model = SimpleGnnPredictor(in_channels=4, hidden_channels=64, num_layers=2).to(device)
+    model = SimpleGnnPredictor(
+        in_channels=NODE_FEATURE_DIM,  # [is_fluid, is_solid, is_wall, vx, vy]
+        hidden_channels=64,
+        edge_channels=4,  # [dx, dy, dz, dist]
+        num_layers=3,
+    ).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
 
@@ -225,8 +275,6 @@ def train(
             targets = batch.y.to(device)  # same shape
 
             data_loss = criterion(preds, targets)
-            mass_loss = mass_center_loss(preds, targets)
-            interface_loss = interface_sharpness_loss(preds, batch)
             density_loss = density_constraint_loss(
                 preds,
                 batch,
@@ -234,13 +282,9 @@ def train(
                 rho_min=950.0,
                 rho_max=1050.0,
             )
+            floor_loss = floor_constraint_loss(preds, batch)
 
-            loss = (
-                data_loss
-                + lambda_mass * mass_loss
-                + lambda_interface * interface_loss
-                + lambda_density * density_loss
-            )
+            loss = data_loss + lambda_density * density_loss + lambda_floor * floor_loss
 
             loss.backward()
             optimizer.step()
@@ -260,8 +304,6 @@ def train(
                 targets = batch.y.to(device)
 
                 data_loss = criterion(preds, targets)
-                mass_loss = mass_center_loss(preds, targets)
-                interface_loss = interface_sharpness_loss(preds, batch)
                 density_loss = density_constraint_loss(
                     preds,
                     batch,
@@ -269,13 +311,9 @@ def train(
                     rho_min=950.0,
                     rho_max=1050.0,
                 )
+                floor_loss = floor_constraint_loss(preds, batch)
 
-                loss = (
-                    data_loss
-                    + lambda_mass * mass_loss
-                    + lambda_interface * interface_loss
-                    + lambda_density * density_loss
-                )
+                loss = data_loss + lambda_density * density_loss + lambda_floor * floor_loss
 
                 val_loss += loss.item()
                 val_batches += 1
@@ -286,10 +324,8 @@ def train(
             f"Epoch {epoch:02d} | "
             f"train_loss={avg_train_loss:.6f} | "
             f"val_loss={avg_val_loss:.6f} | "
-            f"lambda_mass={lambda_mass} | "
-            f"lambda_rigid={lambda_rigid} | "
-            f"lambda_interface={lambda_interface} | "
-            f"lambda_density={lambda_density}"
+            f"lambda_density={lambda_density} | "
+            f"lambda_floor={lambda_floor}"
         )
 
         if avg_val_loss < best_val_loss:
@@ -302,20 +338,18 @@ def train(
 def main() -> None:
     """Run one or more training configurations for comparison.
 
-    By default, all configurations are trained. You can restrict this using
+    By default, both configurations are trained. You can restrict this using
     CLI flags, for example:
 
     - ``python -m src.train_pinn -c vanilla``
-    - ``python -m src.train_pinn -c vanilla mass density``
+    - ``python -m src.train_pinn -c density``
     """
 
     all_configs = [
-        {"name": "vanilla", "lambda_mass": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0, "lambda_density": 0.0},
-        {"name": "mass", "lambda_mass": 1e-3, "lambda_rigid": 0.0, "lambda_interface": 0.0, "lambda_density": 0.0},
-        {"name": "rigid", "lambda_mass": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0, "lambda_density": 0.0},
-        {"name": "interface", "lambda_mass": 0.0, "lambda_rigid": 0.0, "lambda_interface": 1e-4, "lambda_density": 0.0},
-        {"name": "density", "lambda_mass": 0.0, "lambda_rigid": 0.0, "lambda_interface": 0.0, "lambda_density": 1e-5},
-        {"name": "all", "lambda_mass": 1e-3, "lambda_rigid": 0.0, "lambda_interface": 1e-4, "lambda_density": 1e-5},
+        {"name": "vanilla", "lambda_density": 0.0, "lambda_floor": 0.0},
+        {"name": "density", "lambda_density": 1e-5, "lambda_floor": 0.0},
+        {"name": "floor", "lambda_density": 0.0, "lambda_floor": 10.0},
+        {"name": "density_floor", "lambda_density": 1e-5, "lambda_floor": 1.0},
     ]
 
     parser = argparse.ArgumentParser(description="Train physics-informed GNN configurations.")
@@ -327,8 +361,8 @@ def main() -> None:
         choices=[cfg["name"] for cfg in all_configs],
         help=(
             "Name(s) of configurations to train. "
-            "If omitted, all configurations are trained. "
-            "Choices: vanilla, mass, rigid, interface, density, all."
+            "If omitted, both configurations are trained. "
+            "Choices: vanilla, density."
         ),
     )
 
@@ -349,10 +383,8 @@ def main() -> None:
         print("=" * 80)
 
         train(
-            lambda_mass=cfg["lambda_mass"],
-            lambda_rigid=cfg["lambda_rigid"],
-            lambda_interface=cfg["lambda_interface"],
             lambda_density=cfg["lambda_density"],
+            lambda_floor=cfg.get("lambda_floor", 0.0),
             experiment_name=cfg["name"],
         )
 
