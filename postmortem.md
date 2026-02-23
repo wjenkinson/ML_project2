@@ -29,3 +29,8 @@ Codebase is substantially simpler and GNN is not being used as intended. In gene
  Implementing multistep training loss could be a maor unlock as it stretches the overall usefulness of existing data and penalizes the model for compounded errors, not jjust next steps.
 
  In addition, we may find that the hyperparameters are simply not optimal for the current architecture, and it should be relatively straightforward to sweep.
+
+ ### Reflections on second extension
+ Diagnostics have been added the look into the neighbor distances and the velocity distributions of the nodes. In addition, the model has been modified to add more weight to the particles with interface interactions.
+
+ Now phase 8 will be rolled out, a check on hyperparameter optimization, that will determine if this is a tuning problem, or a deeper problem in the implementation.

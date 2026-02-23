@@ -80,7 +80,7 @@ class SimpleGnnPredictor(nn.Module):
     def __init__(
         self,
         in_channels: int = 1,
-        hidden_channels: int = 128,
+        hidden_channels: int = 64,
         edge_channels: int = 4,
         num_layers: int = 3,
     ) -> None:
@@ -225,14 +225,47 @@ def floor_constraint_loss(
     return violation.pow(2).mean()
 
 
+def boundary_node_weights(
+    edge_index: torch.Tensor,
+    atom_type: torch.Tensor,
+    lambda_boundary: float = 5.0,
+) -> torch.Tensor:
+    """Per-node weights that upweight nodes adjacent to a different atom type.
+
+    A node is "boundary-adjacent" if at least one of its neighbours has a
+    different ``atom_type``.  Those nodes receive weight ``lambda_boundary``;
+    all other nodes receive weight ``1.0``.
+    """
+
+    src, dst = edge_index[0], edge_index[1]
+    cross_type = (atom_type[src] != atom_type[dst]).float()  # 1 where types differ
+
+    # For each destination node, sum cross-type flags.  >0 means boundary.
+    N = atom_type.shape[0]
+    cross_count = torch.zeros(N, device=atom_type.device)
+    cross_count.scatter_add_(0, dst, cross_type)
+
+    weights = torch.ones(N, device=atom_type.device)
+    weights[cross_count > 0] = lambda_boundary
+    return weights
+
+
+def weighted_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    """MSE loss with per-node weights.  *weights* shape is (N,)."""
+
+    se = (pred - target).pow(2).mean(dim=-1)  # (N,)
+    return (se * weights).mean()
+
+
 def train(
-    epochs: int = 3,
+    epochs: int = 5,
     batch_size: int = 1,
     learning_rate: float = 1e-3,
     radius: float = NEIGHBOR_RADIUS,
     lambda_density: float = 0.0,
     lambda_floor: float = 0.0,
     lambda_vel: float = 1.0,
+    lambda_boundary: float = 0.0,
     experiment_name: str | None = None,
 ) -> None:
     project_root = Path(__file__).parent.parent
@@ -253,12 +286,13 @@ def train(
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
-    model = SimpleGnnPredictor(
-        in_channels=NODE_FEATURE_DIM,  # [is_fluid, is_solid, is_wall, vx, vy]
-        hidden_channels=64,
-        edge_channels=4,  # [dx, dy, dz, dist]
-        num_layers=3,
-    ).to(device)
+    model_hparams = {
+        "in_channels": NODE_FEATURE_DIM,
+        "hidden_channels": 64,
+        "edge_channels": 4,
+        "num_layers": 3,
+    }
+    model = SimpleGnnPredictor(**model_hparams).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
     criterion = nn.MSELoss()
 
@@ -284,8 +318,16 @@ def train(
             disp_targets = batch.y.to(device)
             vel_targets = batch.vel_target.to(device)
 
-            data_loss = criterion(disp_preds, disp_targets)
-            vel_loss = criterion(vel_preds, vel_targets)
+            # Per-node boundary weights
+            bw = boundary_node_weights(batch.edge_index, batch.atom_type, lambda_boundary) if lambda_boundary > 0 else None
+
+            if bw is not None:
+                data_loss = weighted_mse(disp_preds, disp_targets, bw)
+                vel_loss = weighted_mse(vel_preds, vel_targets, bw)
+            else:
+                data_loss = criterion(disp_preds, disp_targets)
+                vel_loss = criterion(vel_preds, vel_targets)
+
             density_loss = density_constraint_loss(
                 disp_preds,
                 batch,
@@ -315,8 +357,15 @@ def train(
                 disp_targets = batch.y.to(device)
                 vel_targets = batch.vel_target.to(device)
 
-                data_loss = criterion(disp_preds, disp_targets)
-                vel_loss = criterion(vel_preds, vel_targets)
+                bw = boundary_node_weights(batch.edge_index, batch.atom_type, lambda_boundary) if lambda_boundary > 0 else None
+
+                if bw is not None:
+                    data_loss = weighted_mse(disp_preds, disp_targets, bw)
+                    vel_loss = weighted_mse(vel_preds, vel_targets, bw)
+                else:
+                    data_loss = criterion(disp_preds, disp_targets)
+                    vel_loss = criterion(vel_preds, vel_targets)
+
                 density_loss = density_constraint_loss(
                     disp_preds,
                     batch,
@@ -338,12 +387,20 @@ def train(
             f"train_loss={avg_train_loss:.6f} | "
             f"val_loss={avg_val_loss:.6f} | "
             f"lambda_density={lambda_density} | "
-            f"lambda_floor={lambda_floor}"
+            f"lambda_floor={lambda_floor} | "
+            f"lambda_vel={lambda_vel} | "
+            f"lambda_boundary={lambda_boundary}"
         )
 
         if avg_val_loss < best_val_loss:
             best_val_loss = avg_val_loss
-            torch.save(model.state_dict(), model_path)
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "model_hparams": model_hparams,
+                },
+                model_path,
+            )
             print(f"  Saved new best PINN model to {model_path}")
 
     print("Training complete.")
@@ -359,10 +416,11 @@ def main() -> None:
     """
 
     all_configs = [
-        {"name": "vanilla", "lambda_density": 0.0, "lambda_floor": 0.0},
-        {"name": "density", "lambda_density": 1e-5, "lambda_floor": 0.0},
-        {"name": "floor", "lambda_density": 0.0, "lambda_floor": 10.0},
-        {"name": "density_floor", "lambda_density": 1e-5, "lambda_floor": 1.0},
+        {"name": "vanilla", "lambda_density": 0.0, "lambda_floor": 0.0, "lambda_boundary": 0.0},
+        {"name": "density", "lambda_density": 1e-5, "lambda_floor": 0.0, "lambda_boundary": 0.0},
+        {"name": "floor", "lambda_density": 0.0, "lambda_floor": 10.0, "lambda_boundary": 0.0},
+        {"name": "density_floor", "lambda_density": 1e-5, "lambda_floor": 1.0, "lambda_boundary": 0.0},
+        {"name": "boundary", "lambda_density": 0.0, "lambda_floor": 0.0, "lambda_boundary": 5.0},
     ]
 
     parser = argparse.ArgumentParser(description="Train physics-informed GNN configurations.")
@@ -398,6 +456,8 @@ def main() -> None:
         train(
             lambda_density=cfg["lambda_density"],
             lambda_floor=cfg.get("lambda_floor", 0.0),
+            lambda_vel=cfg.get("lambda_vel", 1.0),
+            lambda_boundary=cfg.get("lambda_boundary", 0.0),
             experiment_name=cfg["name"],
         )
 

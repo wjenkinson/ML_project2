@@ -130,7 +130,7 @@ def create_gnn_comparison_gif(
             output_name = f"prediction_vs_gt_pinn{split_suffix}.gif"
 
     output_path = output_dir / output_name
-    imageio.mimsave(output_path, frames, fps=4)
+    imageio.mimsave(output_path, frames, fps=4, loop=0)
     print(f"Saved GT vs prediction GIF to {output_path}")
 
     return output_path

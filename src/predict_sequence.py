@@ -67,14 +67,32 @@ def generate_gnn_predictions(
         print(f"{split.capitalize()} dataset has no frame pairs; nothing to predict.")
         return None
 
-    # Load model (new architecture with edge features)
-    model = SimpleGnnPredictor(
-        in_channels=NODE_FEATURE_DIM,  # [is_fluid, is_solid, is_wall, vx, vy]
-        hidden_channels=64,
-        edge_channels=4,  # [dx, dy, dz, dist]
-        num_layers=3,
-    ).to(device)
-    state_dict = torch.load(ckpt_path, map_location=device)
+    ckpt_payload = torch.load(ckpt_path, map_location=device)
+
+    # Backward compatibility:
+    # - New format: {"model_state_dict": ..., "model_hparams": {...}}
+    # - Legacy format: raw state_dict only
+    if isinstance(ckpt_payload, dict) and "model_state_dict" in ckpt_payload:
+        model_hparams = ckpt_payload.get(
+            "model_hparams",
+            {
+                "in_channels": NODE_FEATURE_DIM,
+                "hidden_channels": 64,
+                "edge_channels": 4,
+                "num_layers": 3,
+            },
+        )
+        state_dict = ckpt_payload["model_state_dict"]
+    else:
+        model_hparams = {
+            "in_channels": NODE_FEATURE_DIM,
+            "hidden_channels": 64,
+            "edge_channels": 4,
+            "num_layers": 3,
+        }
+        state_dict = ckpt_payload
+
+    model = SimpleGnnPredictor(**model_hparams).to(device)
     model.load_state_dict(state_dict)
     model.eval()
 

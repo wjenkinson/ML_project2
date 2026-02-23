@@ -228,7 +228,7 @@ def generate_atom_type_gif(
     plt.close(fig)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    imageio.mimsave(output_path, frames, fps=4)
+    imageio.mimsave(output_path, frames, fps=4, loop=0)
     return output_path
 
 

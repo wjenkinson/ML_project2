@@ -127,7 +127,7 @@
 
 ### Project 2 Further Extension: Multistep training loss and hyperparameter optimization
 
-#### Phase 7: Diagnostics
+#### (COMPLETE) Phase 7: Diagnostics
 **Description:** Identify and intergrate a series of tests demonstrate that the project is behaving as expected. Are Velocities physical, distribution of neighbours. How does validation compare to training?
 
 This is about setting up the codebase for hyperparameter optimization. I need to be able to answer questions like: am I overfitting, am I underfitting, and is the model training the way I expect it to?

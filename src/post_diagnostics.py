@@ -145,7 +145,7 @@ def create_velocity_histogram_gif(
 
     plt.close(fig)
 
-    imageio.mimsave(str(output_path), frames, fps=4)
+    imageio.mimsave(str(output_path), frames, fps=4, loop=0)
     print(f"Saved velocity histogram GIF to {output_path}")
     return output_path
 
@@ -190,7 +190,7 @@ def create_neighbor_distance_histogram_gif(
 
     plt.close(fig)
 
-    imageio.mimsave(str(output_path), frames, fps=4)
+    imageio.mimsave(str(output_path), frames, fps=4, loop=0)
     print(f"Saved neighbor-distance histogram GIF to {output_path}")
     return output_path
 
