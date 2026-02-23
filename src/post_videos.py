@@ -32,15 +32,17 @@ def create_gnn_comparison_gif(
     experiment_name: str | None = None,
     output_name: str | None = None,
     max_frames: int | None = None,
+    split: str = "val",
 ) -> Path | None:
     """Create a side-by-side GT vs prediction GIF from saved GNN sequences."""
 
     output_dir = project_root / "output"
 
+    split_suffix = f"_{split}" if split != "val" else ""
     if experiment_name:
-        pred_path = output_dir / f"pred_sequences_pinn_{experiment_name}.pt"
+        pred_path = output_dir / f"pred_sequences_pinn_{experiment_name}{split_suffix}.pt"
     else:
-        pred_path = output_dir / "pred_sequences_pinn.pt"
+        pred_path = output_dir / f"pred_sequences_pinn{split_suffix}.pt"
 
     if not pred_path.exists():
         print(f"Prediction file not found: {pred_path}. Run predict_sequence.py for this configuration first.")
@@ -123,9 +125,9 @@ def create_gnn_comparison_gif(
 
     if output_name is None:
         if experiment_name:
-            output_name = f"prediction_vs_gt_pinn_{experiment_name}.gif"
+            output_name = f"prediction_vs_gt_pinn_{experiment_name}{split_suffix}.gif"
         else:
-            output_name = "prediction_vs_gt_pinn.gif"
+            output_name = f"prediction_vs_gt_pinn{split_suffix}.gif"
 
     output_path = output_dir / output_name
     imageio.mimsave(output_path, frames, fps=4)
@@ -157,6 +159,12 @@ def main() -> None:
             "Choices: vanilla, density."
         ),
     )
+    parser.add_argument(
+        "--split",
+        choices=["train", "val"],
+        default="val",
+        help="Which data split to visualise (default: val).",
+    )
 
     args = parser.parse_args()
 
@@ -171,9 +179,9 @@ def main() -> None:
 
     for name in configs:
         print("\n" + "-" * 80)
-        print(f"Creating GIF for configuration: {name}")
+        print(f"Creating GIF for configuration: {name} (split={args.split})")
         print("-" * 80)
-        create_gnn_comparison_gif(project_root, experiment_name=name)
+        create_gnn_comparison_gif(project_root, experiment_name=name, split=args.split)
 
 
 if __name__ == "__main__":  # pragma: no cover - CLI guard

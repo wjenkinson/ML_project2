@@ -127,21 +127,24 @@
 
 ### Project 2 Further Extension: Multistep training loss and hyperparameter optimization
 
-#### Phase 7: Multistep training loss
-**Description:** Implement multistep training loss and hyperparameter optimization to improve model performance.
+#### Phase 7: Diagnostics
+**Description:** Identify and intergrate a series of tests demonstrate that the project is behaving as expected. Are Velocities physical, distribution of neighbours. How does validation compare to training?
+
+This is about setting up the codebase for hyperparameter optimization. I need to be able to answer questions like: am I overfitting, am I underfitting, and is the model training the way I expect it to?
 
 **Tasks:**
-- Implement multistep training loss
-- Retrain the core GNN
+- Implement velocity/displacement distribution diagnostics
+- Implement visualizations for convergence on the training data (alongside the existing validation visualization)
+- Identify other properties to track.
 
 **Success Criteria:**
-- Clear identifable improvements made to the trained model after implementing the above changes
-- Generality of the model demostrated (even to a limited capacity)
+- Diagnostics leads to correcting one or more ppreviously unidentified bugs in the project
+- A clean set up makes it easy to understand and reason with the project, what it is doing and what could be going wrong
 
 **Failure Criteria:**
-- Predicted GIFs are not meaningfully different from the baseline
-- Models fail to respect physical constraints
-- no meaningful generality demonstrated
+- Project codebase gets more complicated, more messy
+- No substantial insights garnered from the new diagnostics
+
 
 #### Phase 8: Hyperparameter optimization
 **Description:** Hyperparameter optimization to improve model performance.
@@ -158,3 +161,20 @@
 - Predicted GIFs are not meaningfully different from the baseline
 - Models fail to respect physical constraints
 - no meaningful generality demonstrated
+
+#### Phase 9: Multistep training loss
+**Description:** Implement multistep training loss performance.
+
+**Tasks:**
+- Implement multistep training loss
+- Retrain the core GNN
+
+**Success Criteria:**
+- Clear identifable improvements made to the trained model after implementing the above changes
+- Generality of the model demostrated (even to a limited capacity)
+
+**Failure Criteria:**
+- Predicted GIFs are not meaningfully different from the baseline
+- Models fail to respect physical constraints
+- no meaningful generality demonstrated  
+

@@ -285,6 +285,7 @@ class LammpsGraphDataset(Dataset):
         atom_type = frame_t["atom_type"]  # (N,)
 
         pos_tp1 = frame_tp1["pos"]  # (N, 3)
+        vel_tp1 = frame_tp1["vel"]  # (N, 2)
 
         if pos_t.shape != pos_tp1.shape:
             raise ValueError(
@@ -326,6 +327,7 @@ class LammpsGraphDataset(Dataset):
             edge_index=edge_index,
             edge_attr=edge_attr,
             y=displacement,  # target is now displacement
+            vel_target=vel_tp1,  # GT velocity at t+1
             atom_type=atom_type,
         )
 

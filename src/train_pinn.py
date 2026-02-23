@@ -65,22 +65,22 @@ class EdgeConvLayer(MessagePassing):
 
 
 class SimpleGnnPredictor(nn.Module):
-    """GNN for predicting particle displacements using relative positions.
+    """GNN for predicting particle displacements and velocities.
 
     Node features: [type_id] (1 channel) - position-independent
     Edge features: [Δx, Δy, Δz, ||r||] (4 channels) - relative geometry
-    Output: displacement (dx, dy, dz) per particle
+    Output: displacement (dx, dy, dz) + velocity (vx, vy) per particle
 
     Architecture:
     1. Embed type_id to hidden dimension
     2. Apply EdgeConvLayers that use relative positions
-    3. Predict displacement per node
+    3. Two heads: displacement (3D) and velocity (2D)
     """
 
     def __init__(
         self,
         in_channels: int = 1,
-        hidden_channels: int = 64,
+        hidden_channels: int = 128,
         edge_channels: int = 4,
         num_layers: int = 3,
     ) -> None:
@@ -97,11 +97,18 @@ class SimpleGnnPredictor(nn.Module):
         for _ in range(num_layers):
             self.convs.append(EdgeConvLayer(hidden_channels, edge_channels))
 
-        # Output: predict displacement (dx, dy, dz)
+        # Head 1: predict displacement (dx, dy, dz)
         self.out_lin = nn.Sequential(
             nn.Linear(hidden_channels, hidden_channels),
             nn.ReLU(),
             nn.Linear(hidden_channels, 3),
+        )
+
+        # Head 2: predict next-step velocity (vx, vy)
+        self.vel_lin = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Linear(hidden_channels, 2),
         )
 
     def forward(self, data):  # type: ignore[override]
@@ -117,9 +124,10 @@ class SimpleGnnPredictor(nn.Module):
         for conv in self.convs:
             x = conv(x, edge_index, edge_attr)
 
-        # Predict displacement
+        # Predict displacement and velocity from shared backbone
         displacement = self.out_lin(x)
-        return displacement
+        velocity = self.vel_lin(x)
+        return displacement, velocity
 
 
 def density_constraint_loss(
@@ -224,6 +232,7 @@ def train(
     radius: float = NEIGHBOR_RADIUS,
     lambda_density: float = 0.0,
     lambda_floor: float = 0.0,
+    lambda_vel: float = 1.0,
     experiment_name: str | None = None,
 ) -> None:
     project_root = Path(__file__).parent.parent
@@ -271,20 +280,22 @@ def train(
             batch = batch.to(device)
             optimizer.zero_grad(set_to_none=True)
 
-            preds = model(batch)  # (total_nodes_in_batch, 3)
-            targets = batch.y.to(device)  # same shape
+            disp_preds, vel_preds = model(batch)
+            disp_targets = batch.y.to(device)
+            vel_targets = batch.vel_target.to(device)
 
-            data_loss = criterion(preds, targets)
+            data_loss = criterion(disp_preds, disp_targets)
+            vel_loss = criterion(vel_preds, vel_targets)
             density_loss = density_constraint_loss(
-                preds,
+                disp_preds,
                 batch,
                 radius=radius,
                 rho_min=950.0,
                 rho_max=1050.0,
             )
-            floor_loss = floor_constraint_loss(preds, batch)
+            floor_loss = floor_constraint_loss(disp_preds, batch)
 
-            loss = data_loss + lambda_density * density_loss + lambda_floor * floor_loss
+            loss = data_loss + lambda_vel * vel_loss + lambda_density * density_loss + lambda_floor * floor_loss
 
             loss.backward()
             optimizer.step()
@@ -300,20 +311,22 @@ def train(
         with torch.no_grad():
             for batch in val_loader:
                 batch = batch.to(device)
-                preds = model(batch)
-                targets = batch.y.to(device)
+                disp_preds, vel_preds = model(batch)
+                disp_targets = batch.y.to(device)
+                vel_targets = batch.vel_target.to(device)
 
-                data_loss = criterion(preds, targets)
+                data_loss = criterion(disp_preds, disp_targets)
+                vel_loss = criterion(vel_preds, vel_targets)
                 density_loss = density_constraint_loss(
-                    preds,
+                    disp_preds,
                     batch,
                     radius=radius,
                     rho_min=950.0,
                     rho_max=1050.0,
                 )
-                floor_loss = floor_constraint_loss(preds, batch)
+                floor_loss = floor_constraint_loss(disp_preds, batch)
 
-                loss = data_loss + lambda_density * density_loss + lambda_floor * floor_loss
+                loss = data_loss + lambda_vel * vel_loss + lambda_density * density_loss + lambda_floor * floor_loss
 
                 val_loss += loss.item()
                 val_batches += 1

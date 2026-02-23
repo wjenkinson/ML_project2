@@ -35,8 +35,9 @@ def generate_gnn_predictions(
     radius: float = NEIGHBOR_RADIUS,
     max_steps: int | None = None,
     neighbor_overflow_limit: int | None = 80,
+    split: str = "val",
 ) -> Path | None:
-    """Run the trained GNN on the validation split and save predictions.
+    """Run the trained GNN on the given split and save predictions.
 
     Returns the path to the saved predictions file, or None if no predictions
     could be generated.
@@ -56,14 +57,14 @@ def generate_gnn_predictions(
         print(f"Checkpoint not found: {ckpt_path}. Run train_pinn.py for this configuration first.")
         return None
 
-    # Validation dataset
-    val_dataset = LammpsGraphDataset(split="val", radius=radius)
-    if len(val_dataset) == 0:
-        print("Validation dataset is empty; nothing to predict.")
+    # Dataset for the requested split
+    dataset = LammpsGraphDataset(split=split, radius=radius)
+    if len(dataset) == 0:
+        print(f"{split.capitalize()} dataset is empty; nothing to predict.")
         return None
 
-    if not val_dataset.pairs:
-        print("Validation dataset has no frame pairs; nothing to predict.")
+    if not dataset.pairs:
+        print(f"{split.capitalize()} dataset has no frame pairs; nothing to predict.")
         return None
 
     # Load model (new architecture with edge features)
@@ -79,11 +80,11 @@ def generate_gnn_predictions(
 
     # Reconstruct ordered list of frame names from the stored pairs.
     # pairs[i] = (name_t, name_tp1) with names sorted by timestep.
-    first_name = val_dataset.pairs[0][0]
-    frame_names = [first_name] + [tp1 for (_t, tp1) in val_dataset.pairs]
+    first_name = dataset.pairs[0][0]
+    frame_names = [first_name] + [tp1 for (_t, tp1) in dataset.pairs]
 
     # Assume atom types are constant across frames; take from first frame.
-    first_frame = val_dataset.frames[first_name]
+    first_frame = dataset.frames[first_name]
     atom_type = first_frame["atom_type"].to(device)
 
     # Fixed wall positions (type 3) taken from the first frame.
@@ -118,7 +119,7 @@ def generate_gnn_predictions(
             name_tp1 = frame_names[step + 1]
 
             # Ground-truth next-frame positions for benchmarking.
-            frame_tp1 = val_dataset.frames[name_tp1]
+            frame_tp1 = dataset.frames[name_tp1]
             pos_true_next = frame_tp1["pos"].to(device)
 
             # Build node features: [is_fluid, is_solid, is_wall, is_piston, vx, vy]
@@ -154,8 +155,8 @@ def generate_gnn_predictions(
 
             data_step = Data(x=x, edge_index=edge_index, edge_attr=edge_attr, pos=pos_current)
 
-            # Model predicts DISPLACEMENT, not absolute position
-            displacement_pred = model(data_step)  # (N, 3)
+            # Model predicts DISPLACEMENT and VELOCITY
+            displacement_pred, vel_pred = model(data_step)  # (N, 3), (N, 2)
 
             # Compute next positions from displacement
             preds_next = pos_current + displacement_pred  # (N, 3)
@@ -177,6 +178,9 @@ def generate_gnn_predictions(
             preds_cpu = preds_next.detach().cpu()
             atom_type_cpu = atom_type.detach().cpu()
 
+            # Ground-truth velocity at t+1 for diagnostics.
+            vel_true_next = frame_tp1["vel"].to(device)
+
             pairs.append(
                 {
                     "name_t": name_t,
@@ -185,15 +189,16 @@ def generate_gnn_predictions(
                     "pos_tp1_true": pos_tp1_cpu,
                     "pos_tp1_pred": preds_cpu,
                     "atom_type": atom_type_cpu,
+                    "vel_pred": vel_pred.detach().cpu(),
+                    "vel_gt": vel_true_next.detach().cpu(),
                 }
             )
 
             # Use the prediction as the starting point for the next timestep.
             pos_current = preds_next
 
-            # Update velocity estimate from displacement (assumes dt is implicit)
-            # displacement ≈ velocity * dt, so we use displacement[:, :2] as velocity proxy
-            vel_current = displacement_pred[:, :2].clone()
+            # Use the model's predicted velocity for the next step.
+            vel_current = vel_pred.clone()
             # Walls have zero velocity
             if wall_pos_fixed is not None:
                 vel_current[wall_mask] = 0.0
@@ -202,17 +207,18 @@ def generate_gnn_predictions(
                 vel_current[piston_mask, 0] = 0.0
                 vel_current[piston_mask, 1] = piston_dy_per_frame
 
+    split_suffix = f"_{split}" if split != "val" else ""
     if experiment_name:
-        pred_path = output_dir / f"pred_sequences_pinn_{experiment_name}.pt"
+        pred_path = output_dir / f"pred_sequences_pinn_{experiment_name}{split_suffix}.pt"
     else:
-        pred_path = output_dir / "pred_sequences_pinn.pt"
+        pred_path = output_dir / f"pred_sequences_pinn{split_suffix}.pt"
 
     torch.save({"pairs": pairs}, pred_path)
 
     if experiment_name:
-        print(f"Saved PINN prediction pairs for {experiment_name} to {pred_path}")
+        print(f"Saved PINN prediction pairs for {experiment_name} ({split}) to {pred_path}")
     else:
-        print(f"Saved PINN prediction pairs to {pred_path}")
+        print(f"Saved PINN prediction pairs ({split}) to {pred_path}")
 
     return pred_path
 
@@ -227,7 +233,7 @@ def main() -> None:
         "density_floor",
     ]
 
-    parser = argparse.ArgumentParser(description="Generate validation predictions for selected configurations.")
+    parser = argparse.ArgumentParser(description="Generate predictions for selected configurations.")
     parser.add_argument(
         "-c",
         "--config",
@@ -239,6 +245,12 @@ def main() -> None:
             "If omitted, predictions are generated for both configurations. "
             "Choices: vanilla, density."
         ),
+    )
+    parser.add_argument(
+        "--split",
+        choices=["train", "val"],
+        default="val",
+        help="Which data split to run rollout on (default: val).",
     )
     parser.add_argument(
         "--max-steps",
@@ -266,7 +278,7 @@ def main() -> None:
 
     for name in configs:
         print("\n" + "-" * 80)
-        print(f"Generating predictions for configuration: {name}")
+        print(f"Generating predictions for configuration: {name} (split={args.split})")
         print("-" * 80)
         generate_gnn_predictions(
             project_root,
@@ -274,6 +286,7 @@ def main() -> None:
             radius=NEIGHBOR_RADIUS,
             max_steps=args.max_steps,
             neighbor_overflow_limit=args.neighbor_overflow_limit,
+            split=args.split,
         )
 
 

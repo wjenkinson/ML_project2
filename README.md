@@ -67,6 +67,18 @@ Baseline model without explicit density constraint.
 - Left: ground truth simulation.
 - Right: model prediction for the selected configuration.
 
+In general, the density is being poorly preserved and boundary conditions are not being learned by the model.
+
+Density preservation may improve with the density loss term. Article points out the PINNs need greater sampling at the boundaries (about the same amount as from the bulk) to capture BC as well as bulk conditions.
+
+![Simulation GIF](output/velocity_hist_vanilla.gif)
+
+![Simulation GIF](output/neighbor_dist_hist_vanilla.gif)
+
+Distributions of velocities and neighbor distances are compared between the ground truth and the model.
+
+The model is picking up a particular velocity from the training and mapping it across many particles. Equality, the neighbor positions indicate that the crystal-like structure from the GT is not being preserved my the model.
+
 ### Comments
 
 (See link to [postmortem](postmortem.md) for more details)
