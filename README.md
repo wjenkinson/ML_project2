@@ -71,9 +71,9 @@ In general, the density is being poorly preserved and boundary conditions are no
 
 Density preservation may improve with the density loss term. Article points out the PINNs need greater sampling at the boundaries (about the same amount as from the bulk) to capture BC as well as bulk conditions.
 
-![Simulation GIF](output/velocity_hist_vanilla.gif)
-
-![Simulation GIF](output/neighbor_dist_hist_vanilla.gif)
+![Simulation GIF](output/sweep/lr3e-04_hc64_nl3/prediction_vs_gt_pinn_lr3e-04_hc64_nl3.gif)
+![Simulation GIF](output/sweep/lr3e-04_hc64_nl3/velocity_hist_lr3e-04_hc64_nl3.gif)
+![Simulation GIF](output/sweep/lr3e-04_hc64_nl3/neighbor_dist_hist_lr3e-04_hc64_nl3.gif)
 
 Distributions of velocities and neighbor distances are compared between the ground truth and the model.
 
@@ -90,6 +90,10 @@ After course sweep of hyper parameters, jet dynamics partially recovered
 ![Simulation GIF](output/sweep/lr1e-03_hc64_nl2/density_field_lr1e-03_hc64_nl2.gif)
 
 -density field calculated with kernel appproximation
+
+![Simulation GIF](output/sweep/lr1e-03_hc64_nl2/velocity_hist_lr1e-03_hc64_nl2.gif)
+
+![Simulation GIF](output/sweep/lr1e-03_hc64_nl2/neighbor_dist_hist_lr1e-03_hc64_nl2.gif)
 
 ### Comments
 
