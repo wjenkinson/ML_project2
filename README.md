@@ -83,7 +83,7 @@ The model is picking up a particular velocity from the training and mapping it a
 
 After course sweep of hyper parameters, jet dynamics partially recovered
 
-![Simulation GIF](output/sweep/lr1e-03_hc64_nl2/lr1e-03_hc64_nl2.gif)
+![Simulation GIF](output/sweep/lr1e-03_hc64_nl2/prediction_vs_gt_pinn_lr1e-03_hc64_nl2.gif)
 
 -original particle field
 
