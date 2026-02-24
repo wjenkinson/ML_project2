@@ -79,6 +79,18 @@ Distributions of velocities and neighbor distances are compared between the grou
 
 The model is picking up a particular velocity from the training and mapping it across many particles. Equality, the neighbor positions indicate that the crystal-like structure from the GT is not being preserved my the model.
 
+#### After Hyperparameter tuning
+
+After course sweepp of hyper parameters, jet dynamics partially recovered
+
+![Simulation GIF](output/sweep/lr1e-03_hc64_nl2/lr1e-03_hc64_nl2.gif)
+
+-original particle field
+
+![Simulation GIF](output/sweep/lr1e-03_hc64_nl2/density_field_lr1e-03_hc64_nl2.gif)
+
+-density field calculated with kernel appproximation
+
 ### Comments
 
 (See link to [postmortem](postmortem.md) for more details)

@@ -7,8 +7,9 @@ The model predicts particle DISPLACEMENTS (not absolute positions) using:
 At inference: pos(t+1) = pos(t) + predicted_displacement
 
 Training loss combines:
-- A data term (MSE on displacements).
-- An optional SPH-style density constraint on the resulting absolute positions.
+- Per-node MSE on displacements and velocities for non-fluid atoms (solid/wall/piston).
+- Grid-based density and velocity field losses for fluid atoms.
+- An optional floor constraint.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import MessagePassing
 
 from .graph_dataset import LammpsGraphDataset, NODE_FEATURE_DIM
+from .grid_fields import grid_density_loss, grid_velocity_loss, make_grid
 from .preprocess_data import NEIGHBOR_RADIUS
 
 
@@ -130,69 +132,6 @@ class SimpleGnnPredictor(nn.Module):
         return displacement, velocity
 
 
-def density_constraint_loss(
-    displacement_preds: torch.Tensor,
-    batch,
-    radius: float,
-    rho_min: float = 950.0,
-    rho_max: float = 1050.0,
-) -> torch.Tensor:
-    """SPH-style density constraint using a 2D cubic spline kernel.
-
-    Computes absolute positions from displacement predictions, then penalises
-    local densities outside [rho_min, rho_max].
-    """
-
-    # Compute absolute positions from displacement
-    abs_pos = batch.pos + displacement_preds
-    pos = abs_pos[:, :2]
-    edge_index = batch.edge_index
-    row = edge_index[0]
-    col = edge_index[1]
-
-    h = radius / 2.0
-    if h <= 0.0:
-        return torch.zeros((), dtype=displacement_preds.dtype, device=displacement_preds.device)
-
-    # Particle mass consistent with physics_checks: rho0 * L0^2 with
-    # rho0=1000, L0=0.001.
-    mass_per_particle = 0.001
-
-    # Base density from self-contribution W(0, h).
-    sigma = 10.0 / (7.0 * math.pi * h * h)
-    w0 = sigma * 1.0
-
-    N = pos.shape[0]
-    rho = torch.full((N,), mass_per_particle * w0, dtype=pos.dtype, device=pos.device)
-
-    # Distances between neighbours from predicted positions.
-    diff = pos[row] - pos[col]
-    dist = torch.sqrt(torch.sum(diff * diff, dim=-1) + 1e-12)
-
-    q = dist / h
-    w = torch.zeros_like(dist)
-
-    mask1 = (q >= 0.0) & (q < 1.0)
-    if mask1.any():
-        q1 = q[mask1]
-        w[mask1] = 1.0 - 1.5 * q1 * q1 + 0.75 * q1 * q1 * q1
-
-    mask2 = (q >= 1.0) & (q < 2.0)
-    if mask2.any():
-        q2 = q[mask2]
-        w[mask2] = 0.25 * (2.0 - q2) ** 3
-
-    w = sigma * w
-
-    contrib = mass_per_particle * w
-    rho.scatter_add_(0, row, contrib)
-
-    under = torch.relu(torch.as_tensor(rho_min, dtype=pos.dtype, device=pos.device) - rho)
-    over = torch.relu(rho - torch.as_tensor(rho_max, dtype=pos.dtype, device=pos.device))
-
-    return (under.pow(2) + over.pow(2)).mean()
-
-
 # Floor constraint: rigid horizontal plate at this y-coordinate.
 FLOOR_Y = -0.07
 
@@ -252,7 +191,6 @@ def train(
     batch_size: int = 1,
     learning_rate: float = 3e-3,
     radius: float = NEIGHBOR_RADIUS,
-    lambda_density: float = 0.0,
     lambda_floor: float = 0.0,
     lambda_vel: float = 1.0,
     lambda_boundary: float = 5.0,
@@ -297,6 +235,9 @@ def train(
     else:
         model_path = output_dir / "simple_pinn_predictor.pt"
 
+    # Pre-compute grid centres for field losses
+    grid_x, grid_y = make_grid(device)
+
     for epoch in range(1, epochs + 1):
         model.train()
         train_loss = 0.0
@@ -309,27 +250,34 @@ def train(
             disp_preds, vel_preds = model(batch)
             disp_targets = batch.y.to(device)
             vel_targets = batch.vel_target.to(device)
+            atom_type = batch.atom_type
 
-            # Per-node boundary weights
-            bw = boundary_node_weights(batch.atom_type, lambda_boundary) if lambda_boundary > 0 else None
+            # Predicted and GT next-step positions
+            pred_pos = batch.pos + disp_preds
+            gt_pos = batch.pos + disp_targets
 
-            if bw is not None:
-                data_loss = weighted_mse(disp_preds, disp_targets, bw)
-                vel_loss = weighted_mse(vel_preds, vel_targets, bw)
+            # --- Non-fluid per-node loss (solid / wall / piston) ---
+            non_fluid = (atom_type == 2) | (atom_type == 3) | (atom_type == 4)
+            if non_fluid.any():
+                nf_disp_loss = criterion(disp_preds[non_fluid], disp_targets[non_fluid])
+                nf_vel_loss = criterion(vel_preds[non_fluid], vel_targets[non_fluid])
             else:
-                data_loss = criterion(disp_preds, disp_targets)
-                vel_loss = criterion(vel_preds, vel_targets)
+                nf_disp_loss = torch.zeros((), device=device)
+                nf_vel_loss = torch.zeros((), device=device)
 
-            density_loss = density_constraint_loss(
-                disp_preds,
-                batch,
-                radius=radius,
-                rho_min=950.0,
-                rho_max=1050.0,
+            # --- Fluid grid field losses ---
+            density_loss = grid_density_loss(pred_pos, gt_pos, atom_type, grid_x, grid_y)
+            velocity_loss = grid_velocity_loss(
+                pred_pos, vel_preds, gt_pos, vel_targets, atom_type, grid_x, grid_y,
             )
+
             floor_loss = floor_constraint_loss(disp_preds, batch)
 
-            loss = data_loss + lambda_vel * vel_loss + lambda_density * density_loss + lambda_floor * floor_loss
+            loss = (
+                lambda_boundary * (nf_disp_loss + lambda_vel * nf_vel_loss)
+                + density_loss + lambda_vel * velocity_loss
+                + lambda_floor * floor_loss
+            )
 
             loss.backward()
             optimizer.step()
@@ -348,26 +296,31 @@ def train(
                 disp_preds, vel_preds = model(batch)
                 disp_targets = batch.y.to(device)
                 vel_targets = batch.vel_target.to(device)
+                atom_type = batch.atom_type
 
-                bw = boundary_node_weights(batch.atom_type, lambda_boundary) if lambda_boundary > 0 else None
+                pred_pos = batch.pos + disp_preds
+                gt_pos = batch.pos + disp_targets
 
-                if bw is not None:
-                    data_loss = weighted_mse(disp_preds, disp_targets, bw)
-                    vel_loss = weighted_mse(vel_preds, vel_targets, bw)
+                non_fluid = (atom_type == 2) | (atom_type == 3) | (atom_type == 4)
+                if non_fluid.any():
+                    nf_disp_loss = criterion(disp_preds[non_fluid], disp_targets[non_fluid])
+                    nf_vel_loss = criterion(vel_preds[non_fluid], vel_targets[non_fluid])
                 else:
-                    data_loss = criterion(disp_preds, disp_targets)
-                    vel_loss = criterion(vel_preds, vel_targets)
+                    nf_disp_loss = torch.zeros((), device=device)
+                    nf_vel_loss = torch.zeros((), device=device)
 
-                density_loss = density_constraint_loss(
-                    disp_preds,
-                    batch,
-                    radius=radius,
-                    rho_min=950.0,
-                    rho_max=1050.0,
+                density_loss = grid_density_loss(pred_pos, gt_pos, atom_type, grid_x, grid_y)
+                velocity_loss = grid_velocity_loss(
+                    pred_pos, vel_preds, gt_pos, vel_targets, atom_type, grid_x, grid_y,
                 )
+
                 floor_loss = floor_constraint_loss(disp_preds, batch)
 
-                loss = data_loss + lambda_vel * vel_loss + lambda_density * density_loss + lambda_floor * floor_loss
+                loss = (
+                    lambda_boundary * (nf_disp_loss + lambda_vel * nf_vel_loss)
+                    + density_loss + lambda_vel * velocity_loss
+                    + lambda_floor * floor_loss
+                )
 
                 val_loss += loss.item()
                 val_batches += 1
@@ -378,7 +331,6 @@ def train(
             f"Epoch {epoch:02d} | "
             f"train_loss={avg_train_loss:.6f} | "
             f"val_loss={avg_val_loss:.6f} | "
-            f"lambda_density={lambda_density} | "
             f"lambda_floor={lambda_floor} | "
             f"lambda_vel={lambda_vel} | "
             f"lambda_boundary={lambda_boundary}"
@@ -409,11 +361,9 @@ def main() -> None:
     """
 
     all_configs = [
-        {"name": "vanilla", "lambda_density": 0.0, "lambda_floor": 0.0, "lambda_boundary": 0.0},
-        {"name": "density", "lambda_density": 1e-5, "lambda_floor": 0.0, "lambda_boundary": 0.0},
-        {"name": "floor", "lambda_density": 0.0, "lambda_floor": 10.0, "lambda_boundary": 0.0},
-        {"name": "density_floor", "lambda_density": 1e-5, "lambda_floor": 1.0, "lambda_boundary": 0.0},
-        {"name": "boundary", "lambda_density": 1e-5, "lambda_floor": 0.0, "lambda_boundary": 5.0},
+        {"name": "vanilla", "lambda_floor": 0.0, "lambda_boundary": 0.0},
+        {"name": "floor", "lambda_floor": 10.0, "lambda_boundary": 0.0},
+        {"name": "boundary", "lambda_floor": 0.0, "lambda_boundary": 5.0},
     ]
 
     parser = argparse.ArgumentParser(description="Train physics-informed GNN configurations.")
@@ -447,7 +397,6 @@ def main() -> None:
         print("=" * 80)
 
         train(
-            lambda_density=cfg["lambda_density"],
             lambda_floor=cfg.get("lambda_floor", 0.0),
             lambda_vel=cfg.get("lambda_vel", 1.0),
             lambda_boundary=cfg.get("lambda_boundary", 5.0),

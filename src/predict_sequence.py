@@ -246,9 +246,7 @@ def main() -> None:
 
     all_configs = [
         "vanilla",
-        "density",
         "floor",
-        "density_floor",
         "boundary",
     ]
 

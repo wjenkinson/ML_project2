@@ -141,10 +141,8 @@ def main() -> None:
 
     all_configs = [
         "vanilla",
-        "density",
         "floor",
         "boundary",
-        "density_floor",
     ]
 
     parser = argparse.ArgumentParser(description="Create GT vs prediction GIFs for selected configurations.")

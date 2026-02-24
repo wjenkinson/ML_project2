@@ -28,6 +28,7 @@ import numpy as np
 import torch
 from sklearn.neighbors import NearestNeighbors
 
+from .grid_fields import splat_density, make_grid, GRID_Y_MIN, GRID_Y_MAX, GRID_X_MIN, GRID_X_MAX, RHO0
 from .preprocess_data import NEIGHBOR_RADIUS
 
 
@@ -100,6 +101,79 @@ def _fluid_neighbor_distances(
 # ---------------------------------------------------------------------------
 # GIF renderers
 # ---------------------------------------------------------------------------
+
+def create_density_field_gif(
+    pairs: list,
+    output_path: Path,
+    n_bins: int = 60,
+) -> Path:
+    """Animated GIF of GT vs predicted density heatmaps on a 2D grid."""
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    atom_type = pairs[0]["atom_type"].numpy().astype(int)
+    fluid_mask_np = atom_type == 1
+
+    grid_x, grid_y = make_grid()
+    gx_np = grid_x.numpy()
+    gy_np = grid_y.numpy()
+
+    frames: List[np.ndarray] = []
+    fig, axes = plt.subplots(1, 2, figsize=(10, 5))
+    ax_gt, ax_pred = axes
+
+    # Fixed physical density range
+    vmin_phys, vmax_phys = 0.0, 2000.0
+
+    # Shared colorbar (created once, placed below both axes)
+    import matplotlib.colors as mcolors
+    sm = plt.cm.ScalarMappable(
+        cmap="viridis",
+        norm=mcolors.Normalize(vmin=vmin_phys, vmax=vmax_phys),
+    )
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=axes, orientation="horizontal", fraction=0.06, pad=0.12)
+    cbar.set_label("Density (kg/m³)")
+
+    for step, item in enumerate(pairs):
+        pos_gt = torch.from_numpy(item["pos_tp1_true"].numpy()).float()
+        pos_pred = torch.from_numpy(item["pos_tp1_pred"].numpy()).float()
+
+        fluid_gt = pos_gt[fluid_mask_np, :2]
+        fluid_pred = pos_pred[fluid_mask_np, :2]
+
+        rho_gt = splat_density(fluid_gt, grid_x, grid_y).numpy() * RHO0
+        rho_pred = splat_density(fluid_pred, grid_x, grid_y).numpy() * RHO0
+
+        for ax in axes:
+            ax.clear()
+
+        ax_gt.imshow(
+            rho_gt, origin="lower", aspect="auto",
+            extent=[GRID_X_MIN, GRID_X_MAX, GRID_Y_MIN, GRID_Y_MAX],
+            vmin=vmin_phys, vmax=vmax_phys, cmap="viridis",
+        )
+        ax_gt.set_title("GT density")
+
+        ax_pred.imshow(
+            rho_pred, origin="lower", aspect="auto",
+            extent=[GRID_X_MIN, GRID_X_MAX, GRID_Y_MIN, GRID_Y_MAX],
+            vmin=vmin_phys, vmax=vmax_phys, cmap="viridis",
+        )
+        ax_pred.set_title("Predicted density")
+
+        fig.suptitle(f"Step {step}  ({item.get('name_tp1', '')})")
+        fig.tight_layout()
+
+        frames.append(_render_to_frame(fig))
+
+    plt.close(fig)
+
+    imageio.mimsave(str(output_path), frames, fps=4, loop=0)
+    print(f"Saved density field GIF to {output_path}")
+    return output_path
+
 
 def _render_to_frame(fig) -> np.ndarray:
     """Render a matplotlib figure to an RGB numpy array."""
@@ -224,15 +298,18 @@ def run_diagnostics(
         output_dir / f"neighbor_dist_hist_{tag}.gif",
     )
 
+    create_density_field_gif(
+        pairs,
+        output_dir / f"density_field_{tag}.gif",
+    )
+
 
 def main() -> None:
     project_root = Path(__file__).parent.parent
 
     all_configs = [
         "vanilla",
-        "density",
         "floor",
-        "density_floor",
         "boundary",
     ]
 

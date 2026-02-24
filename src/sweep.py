@@ -40,7 +40,6 @@ STAGE_A_GRID = {
 STAGE_A_FIXED = {
     "epochs": 8,
     "batch_size": 1,
-    "lambda_density": 0.0,
     "lambda_floor": 0.0,
     "lambda_vel": 1.0,
     "lambda_boundary": 0.0,
