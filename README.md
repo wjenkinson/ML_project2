@@ -61,7 +61,7 @@ This project focuses on comparing **ground truth LAMMPS frames** with prediction
 
 For the main demos we use **two GIFs** produced by `post_videos.py`:
 
-![Simulation GIF](output/prediction_vs_gt_pinn_vanilla.gif)
+![Simulation GIF](output/sweep/lr3e-04_hc64_nl3/prediction_vs_gt_pinn_lr3e-04_hc64_nl3.gif)
 
 Baseline model without explicit density constraint.
 - Left: ground truth simulation.
@@ -71,7 +71,6 @@ In general, the density is being poorly preserved and boundary conditions are no
 
 Density preservation may improve with the density loss term. Article points out the PINNs need greater sampling at the boundaries (about the same amount as from the bulk) to capture BC as well as bulk conditions.
 
-![Simulation GIF](output/sweep/lr3e-04_hc64_nl3/prediction_vs_gt_pinn_lr3e-04_hc64_nl3.gif)
 ![Simulation GIF](output/sweep/lr3e-04_hc64_nl3/velocity_hist_lr3e-04_hc64_nl3.gif)
 ![Simulation GIF](output/sweep/lr3e-04_hc64_nl3/neighbor_dist_hist_lr3e-04_hc64_nl3.gif)
 
