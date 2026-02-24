@@ -81,7 +81,7 @@ The model is picking up a particular velocity from the training and mapping it a
 
 #### After Hyperparameter tuning
 
-After course sweepp of hyper parameters, jet dynamics partially recovered
+After course sweep of hyper parameters, jet dynamics partially recovered
 
 ![Simulation GIF](output/sweep/lr1e-03_hc64_nl2/lr1e-03_hc64_nl2.gif)
 
