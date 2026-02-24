@@ -249,6 +249,7 @@ def main() -> None:
         "density",
         "floor",
         "density_floor",
+        "boundary",
     ]
 
     parser = argparse.ArgumentParser(description="Generate predictions for selected configurations.")

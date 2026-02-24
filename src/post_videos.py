@@ -143,6 +143,7 @@ def main() -> None:
         "vanilla",
         "density",
         "floor",
+        "boundary",
         "density_floor",
     ]
 

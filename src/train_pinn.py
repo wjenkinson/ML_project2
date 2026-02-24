@@ -80,9 +80,9 @@ class SimpleGnnPredictor(nn.Module):
     def __init__(
         self,
         in_channels: int = 1,
-        hidden_channels: int = 64,
+        hidden_channels: int = 128,
         edge_channels: int = 4,
-        num_layers: int = 3,
+        num_layers: int = 2,
     ) -> None:
         super().__init__()
 
@@ -226,27 +226,17 @@ def floor_constraint_loss(
 
 
 def boundary_node_weights(
-    edge_index: torch.Tensor,
     atom_type: torch.Tensor,
     lambda_boundary: float = 5.0,
 ) -> torch.Tensor:
-    """Per-node weights that upweight nodes adjacent to a different atom type.
+    """Per-node weights that upweight solid (type 2) and wall (type 3) nodes.
 
-    A node is "boundary-adjacent" if at least one of its neighbours has a
-    different ``atom_type``.  Those nodes receive weight ``lambda_boundary``;
-    all other nodes receive weight ``1.0``.
+    Solid and wall atoms receive weight ``lambda_boundary``; all others
+    (fluid, piston) receive weight ``1.0``.
     """
 
-    src, dst = edge_index[0], edge_index[1]
-    cross_type = (atom_type[src] != atom_type[dst]).float()  # 1 where types differ
-
-    # For each destination node, sum cross-type flags.  >0 means boundary.
-    N = atom_type.shape[0]
-    cross_count = torch.zeros(N, device=atom_type.device)
-    cross_count.scatter_add_(0, dst, cross_type)
-
-    weights = torch.ones(N, device=atom_type.device)
-    weights[cross_count > 0] = lambda_boundary
+    weights = torch.ones(atom_type.shape[0], device=atom_type.device)
+    weights[(atom_type == 2) | (atom_type == 3) | (atom_type == 4)] = lambda_boundary
     return weights
 
 
@@ -260,14 +250,16 @@ def weighted_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor
 def train(
     epochs: int = 5,
     batch_size: int = 1,
-    learning_rate: float = 1e-3,
+    learning_rate: float = 3e-3,
     radius: float = NEIGHBOR_RADIUS,
     lambda_density: float = 0.0,
     lambda_floor: float = 0.0,
     lambda_vel: float = 1.0,
-    lambda_boundary: float = 0.0,
+    lambda_boundary: float = 5.0,
+    hidden_channels: int = 128,
+    num_layers: int = 2,
     experiment_name: str | None = None,
-) -> None:
+) -> float:
     project_root = Path(__file__).parent.parent
     print(f"Project root: {project_root}")
 
@@ -281,16 +273,16 @@ def train(
 
     if len(train_dataset) == 0:
         print("Train dataset is empty; nothing to train on.")
-        return
+        return float("inf")
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
     model_hparams = {
         "in_channels": NODE_FEATURE_DIM,
-        "hidden_channels": 64,
+        "hidden_channels": hidden_channels,
         "edge_channels": 4,
-        "num_layers": 3,
+        "num_layers": num_layers,
     }
     model = SimpleGnnPredictor(**model_hparams).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
@@ -319,7 +311,7 @@ def train(
             vel_targets = batch.vel_target.to(device)
 
             # Per-node boundary weights
-            bw = boundary_node_weights(batch.edge_index, batch.atom_type, lambda_boundary) if lambda_boundary > 0 else None
+            bw = boundary_node_weights(batch.atom_type, lambda_boundary) if lambda_boundary > 0 else None
 
             if bw is not None:
                 data_loss = weighted_mse(disp_preds, disp_targets, bw)
@@ -357,7 +349,7 @@ def train(
                 disp_targets = batch.y.to(device)
                 vel_targets = batch.vel_target.to(device)
 
-                bw = boundary_node_weights(batch.edge_index, batch.atom_type, lambda_boundary) if lambda_boundary > 0 else None
+                bw = boundary_node_weights(batch.atom_type, lambda_boundary) if lambda_boundary > 0 else None
 
                 if bw is not None:
                     data_loss = weighted_mse(disp_preds, disp_targets, bw)
@@ -405,6 +397,7 @@ def train(
 
     print("Training complete.")
     print(f"Best validation loss: {best_val_loss:.6f}")
+    return best_val_loss
 def main() -> None:
     """Run one or more training configurations for comparison.
 
@@ -420,7 +413,7 @@ def main() -> None:
         {"name": "density", "lambda_density": 1e-5, "lambda_floor": 0.0, "lambda_boundary": 0.0},
         {"name": "floor", "lambda_density": 0.0, "lambda_floor": 10.0, "lambda_boundary": 0.0},
         {"name": "density_floor", "lambda_density": 1e-5, "lambda_floor": 1.0, "lambda_boundary": 0.0},
-        {"name": "boundary", "lambda_density": 0.0, "lambda_floor": 0.0, "lambda_boundary": 5.0},
+        {"name": "boundary", "lambda_density": 1e-5, "lambda_floor": 0.0, "lambda_boundary": 5.0},
     ]
 
     parser = argparse.ArgumentParser(description="Train physics-informed GNN configurations.")
@@ -457,7 +450,9 @@ def main() -> None:
             lambda_density=cfg["lambda_density"],
             lambda_floor=cfg.get("lambda_floor", 0.0),
             lambda_vel=cfg.get("lambda_vel", 1.0),
-            lambda_boundary=cfg.get("lambda_boundary", 0.0),
+            lambda_boundary=cfg.get("lambda_boundary", 5.0),
+            hidden_channels=cfg.get("hidden_channels", 128),
+            num_layers=cfg.get("num_layers", 2),
             experiment_name=cfg["name"],
         )
 
