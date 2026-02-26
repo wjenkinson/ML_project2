@@ -151,4 +151,4 @@ python src/post_figures.py
 
 ## License
 
-This project is for educational purposes.
+MIT License
