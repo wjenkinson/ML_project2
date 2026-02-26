@@ -25,7 +25,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.nn import MessagePassing
 
 from .graph_dataset import LammpsGraphDataset, NODE_FEATURE_DIM
-from .grid_fields import grid_density_loss, grid_velocity_loss, make_grid
+from .grid_fields import grid_density_loss, grid_kinetic_energy_loss, make_grid
 from .preprocess_data import NEIGHBOR_RADIUS
 
 
@@ -189,10 +189,9 @@ def weighted_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor
 def train(
     epochs: int = 5,
     batch_size: int = 1,
-    learning_rate: float = 3e-3,
+    learning_rate: float = 3e-4,
     radius: float = NEIGHBOR_RADIUS,
-    lambda_floor: float = 0.0,
-    lambda_vel: float = 1.0,
+    lambda_ke: float = 1.0,
     lambda_boundary: float = 5.0,
     hidden_channels: int = 128,
     num_layers: int = 2,
@@ -267,16 +266,14 @@ def train(
 
             # --- Fluid grid field losses ---
             density_loss = grid_density_loss(pred_pos, gt_pos, atom_type, grid_x, grid_y)
-            velocity_loss = grid_velocity_loss(
+            ke_loss = grid_kinetic_energy_loss(
                 pred_pos, vel_preds, gt_pos, vel_targets, atom_type, grid_x, grid_y,
             )
 
-            floor_loss = floor_constraint_loss(disp_preds, batch)
-
             loss = (
-                lambda_boundary * (nf_disp_loss + lambda_vel * nf_vel_loss)
-                + density_loss + lambda_vel * velocity_loss
-                + lambda_floor * floor_loss
+                lambda_boundary * (nf_disp_loss + nf_vel_loss)
+                + density_loss
+                + lambda_ke * ke_loss
             )
 
             loss.backward()
@@ -310,16 +307,14 @@ def train(
                     nf_vel_loss = torch.zeros((), device=device)
 
                 density_loss = grid_density_loss(pred_pos, gt_pos, atom_type, grid_x, grid_y)
-                velocity_loss = grid_velocity_loss(
+                ke_loss = grid_kinetic_energy_loss(
                     pred_pos, vel_preds, gt_pos, vel_targets, atom_type, grid_x, grid_y,
                 )
 
-                floor_loss = floor_constraint_loss(disp_preds, batch)
-
                 loss = (
-                    lambda_boundary * (nf_disp_loss + lambda_vel * nf_vel_loss)
-                    + density_loss + lambda_vel * velocity_loss
-                    + lambda_floor * floor_loss
+                    lambda_boundary * (nf_disp_loss + nf_vel_loss)
+                    + density_loss
+                    + lambda_ke * ke_loss
                 )
 
                 val_loss += loss.item()
@@ -331,8 +326,7 @@ def train(
             f"Epoch {epoch:02d} | "
             f"train_loss={avg_train_loss:.6f} | "
             f"val_loss={avg_val_loss:.6f} | "
-            f"lambda_floor={lambda_floor} | "
-            f"lambda_vel={lambda_vel} | "
+            f"lambda_ke={lambda_ke} | "
             f"lambda_boundary={lambda_boundary}"
         )
 
@@ -361,9 +355,8 @@ def main() -> None:
     """
 
     all_configs = [
-        {"name": "vanilla", "lambda_floor": 0.0, "lambda_boundary": 0.0},
-        {"name": "floor", "lambda_floor": 10.0, "lambda_boundary": 0.0},
-        {"name": "boundary", "lambda_floor": 0.0, "lambda_boundary": 5.0},
+        {"name": "vanilla", "lambda_boundary": 0.0},
+        {"name": "boundary", "lambda_boundary": 5.0},
     ]
 
     parser = argparse.ArgumentParser(description="Train physics-informed GNN configurations.")
@@ -397,8 +390,7 @@ def main() -> None:
         print("=" * 80)
 
         train(
-            lambda_floor=cfg.get("lambda_floor", 0.0),
-            lambda_vel=cfg.get("lambda_vel", 1.0),
+            lambda_ke=cfg.get("lambda_ke", 1.0),
             lambda_boundary=cfg.get("lambda_boundary", 5.0),
             hidden_channels=cfg.get("hidden_channels", 128),
             num_layers=cfg.get("num_layers", 2),

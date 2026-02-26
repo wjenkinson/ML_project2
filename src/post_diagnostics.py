@@ -309,7 +309,6 @@ def main() -> None:
 
     all_configs = [
         "vanilla",
-        "floor",
         "boundary",
     ]
 

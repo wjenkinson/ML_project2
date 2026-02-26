@@ -264,8 +264,14 @@ def grid_velocity_loss(
     grid_x: Tensor,
     grid_y: Tensor,
     h: float = GRID_H,
+    eps: float = 1e-8,
 ) -> Tensor:
-    """MSE between predicted and GT velocity fields on grid (fluid only)."""
+    """Density-weighted MSE between predicted and GT velocity fields (fluid only).
+
+    Each cell's velocity error is weighted by the GT density at that cell,
+    so empty cells contribute nothing and the loss focuses on regions where
+    fluid actually exists.
+    """
 
     fluid_mask = atom_type == 1
     pred_fluid_pos = pred_pos[fluid_mask, :2]
@@ -280,5 +286,48 @@ def grid_velocity_loss(
 
     with torch.no_grad():
         vel_gt = splat_velocity(gt_fluid_pos, gt_fluid_vel, grid_x, grid_y, h)
+        rho_gt = splat_density(gt_fluid_pos, grid_x, grid_y, h)  # normalised
+        weight = rho_gt / (rho_gt.sum() + eps)                    # (Gy, Gx)
 
-    return (vel_pred - vel_gt).pow(2).mean()
+    diff_sq = (vel_pred - vel_gt).pow(2).sum(dim=-1)              # (Gy, Gx)
+    return (weight * diff_sq).sum()
+
+
+def grid_kinetic_energy_loss(
+    pred_pos: Tensor,
+    pred_vel: Tensor,
+    gt_pos: Tensor,
+    gt_vel: Tensor,
+    atom_type: Tensor,
+    grid_x: Tensor,
+    grid_y: Tensor,
+    h: float = GRID_H,
+) -> Tensor:
+    """MSE between predicted and GT kinetic-energy density fields (fluid only).
+
+    KE density = 0.5 * rho * |v|^2.  Because it scales as v^2, high-velocity
+    regions (the jet) contribute quadratically more than slow bulk fluid,
+    naturally forcing the model to capture jet dynamics.
+    """
+
+    fluid_mask = atom_type == 1
+    pred_fluid_pos = pred_pos[fluid_mask, :2]
+    pred_fluid_vel = pred_vel[fluid_mask]
+    gt_fluid_pos = gt_pos[fluid_mask, :2]
+    gt_fluid_vel = gt_vel[fluid_mask]
+
+    if pred_fluid_pos.shape[0] == 0:
+        return torch.zeros((), device=pred_pos.device)
+
+    rho_pred = splat_density(pred_fluid_pos, grid_x, grid_y, h)       # (Gy, Gx)
+    vel_pred = splat_velocity(pred_fluid_pos, pred_fluid_vel, grid_x, grid_y, h)
+
+    with torch.no_grad():
+        rho_gt = splat_density(gt_fluid_pos, grid_x, grid_y, h)
+        vel_gt = splat_velocity(gt_fluid_pos, gt_fluid_vel, grid_x, grid_y, h)
+
+    # KE density = 0.5 * rho * |v|^2   (rho is normalised, so KE ~ rho_norm * |v|^2)
+    ke_pred = 0.5 * rho_pred * vel_pred.pow(2).sum(dim=-1)            # (Gy, Gx)
+    ke_gt = 0.5 * rho_gt * vel_gt.pow(2).sum(dim=-1)
+
+    return (ke_pred - ke_gt).pow(2).mean()

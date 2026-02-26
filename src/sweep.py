@@ -32,7 +32,7 @@ from .preprocess_data import NEIGHBOR_RADIUS
 # ---------------------------------------------------------------------------
 
 STAGE_A_GRID = {
-    "learning_rate": [3e-4, 1e-3, 3e-3],
+    "learning_rate": [1e-4, 3e-4, 1e-3],
     "hidden_channels": [64, 128],
     "num_layers": [2, 3],
 }
@@ -40,23 +40,22 @@ STAGE_A_GRID = {
 STAGE_A_FIXED = {
     "epochs": 8,
     "batch_size": 1,
-    "lambda_floor": 0.0,
-    "lambda_vel": 1.0,
+    "lambda_ke": 1.0,
     "lambda_boundary": 0.0,
 }
 
-STAGE_B_BOUNDARY_VALUES = [0.0, 2.0, 5.0]
+STAGE_B_KE_VALUES = [1.0, 2.0, 5.0]
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _run_name(lr: float, hc: int, nl: int, lb: float | None = None) -> str:
+def _run_name(lr: float, hc: int, nl: int, lke: float | None = None) -> str:
     """Generate a descriptive experiment name from hyperparameters."""
     base = f"lr{lr:.0e}_hc{hc}_nl{nl}".replace("+", "")
-    if lb is not None and lb > 0:
-        base += f"_lb{lb:.1f}"
+    if lke is not None and lke != 1.0:
+        base += f"_ke{lke:.1f}"
     return base
 
 
@@ -169,7 +168,7 @@ def run_stage_a(
                 "learning_rate": lr,
                 "hidden_channels": hc,
                 "num_layers": nl,
-                "lambda_boundary": 0.0,
+                "lambda_ke": 1.0,
                 "best_val_loss": float("nan"),
             })
             continue
@@ -190,7 +189,7 @@ def run_stage_a(
             "learning_rate": lr,
             "hidden_channels": hc,
             "num_layers": nl,
-            "lambda_boundary": 0.0,
+            "lambda_ke": 1.0,
             "best_val_loss": best_val_loss,
         })
 
@@ -205,28 +204,28 @@ def run_stage_b(
     dry_run: bool = False,
     top_n: int = 2,
 ) -> List[Dict]:
-    """Stage B: sweep lambda_boundary on top-N Stage A configs."""
+    """Stage B: sweep lambda_ke on top-N Stage A configs."""
 
     # Sort and pick top N from Stage A
     ranked = sorted(stage_a_leaderboard, key=lambda x: x["best_val_loss"])
     top_configs = ranked[:top_n]
 
-    combos = list(itertools.product(top_configs, STAGE_B_BOUNDARY_VALUES))
+    combos = list(itertools.product(top_configs, STAGE_B_KE_VALUES))
 
     print(f"\n{'='*80}")
-    print(f"STAGE B: {len(combos)} configurations (top {top_n} × {len(STAGE_B_BOUNDARY_VALUES)} boundary values)")
+    print(f"STAGE B: {len(combos)} configurations (top {top_n} × {len(STAGE_B_KE_VALUES)} lambda_ke values)")
     print(f"{'='*80}")
 
     leaderboard: List[Dict] = []
 
-    for i, (base_cfg, lb) in enumerate(combos, 1):
+    for i, (base_cfg, lke) in enumerate(combos, 1):
         lr = base_cfg["learning_rate"]
         hc = int(base_cfg["hidden_channels"])
         nl = int(base_cfg["num_layers"])
-        name = _run_name(lr, hc, nl, lb=lb)
+        name = _run_name(lr, hc, nl, lke=lke)
 
         print(f"\n[{i}/{len(combos)}] {name}")
-        print(f"  lr={lr}, hidden_channels={hc}, num_layers={nl}, lambda_boundary={lb}")
+        print(f"  lr={lr}, hidden_channels={hc}, num_layers={nl}, lambda_ke={lke}")
 
         if dry_run:
             leaderboard.append({
@@ -234,7 +233,7 @@ def run_stage_b(
                 "learning_rate": lr,
                 "hidden_channels": hc,
                 "num_layers": nl,
-                "lambda_boundary": lb,
+                "lambda_ke": lke,
                 "best_val_loss": float("nan"),
             })
             continue
@@ -244,7 +243,7 @@ def run_stage_b(
             "learning_rate": lr,
             "hidden_channels": hc,
             "num_layers": nl,
-            "lambda_boundary": lb,
+            "lambda_ke": lke,
         }
 
         best_val_loss = _run_single_config(
@@ -256,7 +255,7 @@ def run_stage_b(
             "learning_rate": lr,
             "hidden_channels": hc,
             "num_layers": nl,
-            "lambda_boundary": lb,
+            "lambda_ke": lke,
             "best_val_loss": best_val_loss,
         })
 
