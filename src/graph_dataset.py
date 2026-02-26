@@ -271,6 +271,37 @@ class LammpsGraphDataset(Dataset):
             "vy": raw[:, col_indices["vy"]].astype(np.float32),
         }
 
+    # ------------------------------------------------------------------
+    # Efficient GT access for multistep training (no graph rebuild)
+    # ------------------------------------------------------------------
+
+    def get_gt(
+        self,
+        pair_idx: int,
+        device: torch.device | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Return (gt_pos_tp1, gt_vel_tp1, gt_displacement) for a pair index.
+
+        This is much cheaper than ``__getitem__`` because it skips graph
+        construction — useful for fetching ground truth at rollout steps
+        beyond the first.
+        """
+
+        name_t, name_tp1 = self.pairs[pair_idx]
+        frame_t = self.frames[name_t]
+        frame_tp1 = self.frames[name_tp1]
+
+        gt_pos = frame_tp1["pos"]            # (N, 3)
+        gt_vel = frame_tp1["vel"]            # (N, 2)
+        gt_disp = gt_pos - frame_t["pos"]    # (N, 3)
+
+        if device is not None:
+            gt_pos = gt_pos.to(device)
+            gt_vel = gt_vel.to(device)
+            gt_disp = gt_disp.to(device)
+
+        return gt_pos, gt_vel, gt_disp
+
     def __len__(self) -> int:  # type: ignore[override]
         return len(self.pairs)
 

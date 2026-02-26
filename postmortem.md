@@ -34,3 +34,23 @@ Codebase is substantially simpler and GNN is not being used as intended. In gene
  Diagnostics have been added the look into the neighbor distances and the velocity distributions of the nodes. In addition, the model has been modified to add more weight to the particles with interface interactions.
 
  Now phase 8 will be rolled out, a check on hyperparameter optimization, that will determine if this is a tuning problem, or a deeper problem in the implementation.
+
+ #### Diagnostics, hyperparameter optimization & multistep roll out
+
+More visializations have been created to analyse, for example, the neighbor distributions and velocity distributions of the system. These diagnostics reveal when the model is picking up essential physics such as treating the body of fluid as evenly spaces nodes, and identifying local velocities.
+
+Hyperparameter sweeps have been implemented to determine if the model is simply not learning well enough, or if the model is not learning at all. To this end, the model looks qualitatively more effective with certain combinations, but none of the hyper paramater combinations lead to sensible predictions.
+
+Likewise, multistep roll out has been introduced to help the model build stable solutions across multiple inference steps. (awaiting hyperparameter sweep results)
+
+
+#### Future work (for Project 3)
+I am trying to train a dynamic model using:
+- displacements
+- velocities
+
+Future work should also train of forces/accelerations.
+
+In addition, I am trying to one shot an extrusion model. Future training pipelines would benefit from training on general flows (canonical flows such as couette, dam breaks and perhaps a propeller type simulation).
+
+Also, we should only focus on the fluid and solid phases. I do not think the motion of the pistons and walls need to be trained as they can remain clamped in all configurations.

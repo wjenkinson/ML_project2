@@ -17,14 +17,20 @@ from __future__ import annotations
 from pathlib import Path
 import argparse
 import math
+import random
 
 import torch
 from torch import nn
 from torch.nn import functional as F
-from torch_geometric.loader import DataLoader
+from torch_geometric.data import Data
 from torch_geometric.nn import MessagePassing
 
-from .graph_dataset import LammpsGraphDataset, NODE_FEATURE_DIM
+from .graph_dataset import (
+    LammpsGraphDataset,
+    NODE_FEATURE_DIM,
+    build_radius_graph_pbc_x,
+    minimum_image_rel_pos,
+)
 from .grid_fields import grid_density_loss, grid_kinetic_energy_loss, make_grid
 from .preprocess_data import NEIGHBOR_RADIUS
 
@@ -186,6 +192,47 @@ def weighted_mse(pred: torch.Tensor, target: torch.Tensor, weights: torch.Tensor
     return (se * weights).mean()
 
 
+def rebuild_graph(
+    pos: torch.Tensor,
+    vel: torch.Tensor,
+    atom_type: torch.Tensor,
+    radius: float,
+) -> Data:
+    """Build a new graph from predicted state for multistep unrolling.
+
+    ``edge_index`` is constructed from *detached* positions (discrete
+    neighbour lookup is non-differentiable), but ``edge_attr`` is computed
+    from the *live* ``pos`` tensor so that gradients flow back through the
+    predicted positions from the previous rollout step.
+    """
+
+    # One-hot type features
+    is_fluid = (atom_type == 1).float().unsqueeze(-1)
+    is_solid = (atom_type == 2).float().unsqueeze(-1)
+    is_wall = (atom_type == 3).float().unsqueeze(-1)
+    is_piston = (atom_type == 4).float().unsqueeze(-1)
+    x = torch.cat([is_fluid, is_solid, is_wall, is_piston, vel], dim=-1)
+
+    # Neighbour lookup on detached (numpy) positions
+    coords_np = pos.detach().cpu().numpy()
+    row, col = build_radius_graph_pbc_x(coords_np, radius)
+    edge_index = torch.tensor([row, col], dtype=torch.long, device=pos.device)
+
+    # Differentiable edge attributes
+    if edge_index.numel() > 0:
+        src, dst = edge_index[0], edge_index[1]
+        rel_pos = minimum_image_rel_pos(pos[src], pos[dst])
+        dist = torch.norm(rel_pos, dim=-1, keepdim=True)
+        edge_attr = torch.cat([rel_pos, dist], dim=-1)
+    else:
+        edge_attr = torch.zeros((0, 4), dtype=pos.dtype, device=pos.device)
+
+    return Data(
+        x=x, pos=pos, edge_index=edge_index,
+        edge_attr=edge_attr, atom_type=atom_type,
+    )
+
+
 def train(
     epochs: int = 5,
     batch_size: int = 1,
@@ -195,6 +242,7 @@ def train(
     lambda_boundary: float = 5.0,
     hidden_channels: int = 128,
     num_layers: int = 2,
+    rollout_steps: int = 1,
     experiment_name: str | None = None,
 ) -> float:
     project_root = Path(__file__).parent.parent
@@ -212,8 +260,15 @@ def train(
         print("Train dataset is empty; nothing to train on.")
         return float("inf")
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    # Valid starting indices for rollout windows
+    train_starts = list(range(len(train_dataset) - rollout_steps + 1))
+    val_starts = list(range(len(val_dataset) - rollout_steps + 1))
+    if not train_starts:
+        print(f"Not enough training pairs ({len(train_dataset)}) for rollout_steps={rollout_steps}.")
+        return float("inf")
+
+    print(f"Multistep training: rollout_steps={rollout_steps}, "
+          f"train_windows={len(train_starts)}, val_windows={len(val_starts)}")
 
     model_hparams = {
         "in_channels": NODE_FEATURE_DIM,
@@ -242,40 +297,56 @@ def train(
         train_loss = 0.0
         num_batches = 0
 
-        for batch in train_loader:
-            batch = batch.to(device)
+        random.shuffle(train_starts)
+
+        for seq_start in train_starts:
             optimizer.zero_grad(set_to_none=True)
 
-            disp_preds, vel_preds = model(batch)
-            disp_targets = batch.y.to(device)
-            vel_targets = batch.vel_target.to(device)
-            atom_type = batch.atom_type
+            # Initial graph from dataset (includes prebuilt edge_index)
+            data = train_dataset[seq_start]
+            data = data.to(device)
+            pos = data.pos
+            atom_type = data.atom_type
 
-            # Predicted and GT next-step positions
-            pred_pos = batch.pos + disp_preds
-            gt_pos = batch.pos + disp_targets
+            total_step_loss = torch.zeros((), device=device)
 
-            # --- Non-fluid per-node loss (solid / wall / piston) ---
-            non_fluid = (atom_type == 2) | (atom_type == 3) | (atom_type == 4)
-            if non_fluid.any():
-                nf_disp_loss = criterion(disp_preds[non_fluid], disp_targets[non_fluid])
-                nf_vel_loss = criterion(vel_preds[non_fluid], vel_targets[non_fluid])
-            else:
-                nf_disp_loss = torch.zeros((), device=device)
-                nf_vel_loss = torch.zeros((), device=device)
+            for k in range(rollout_steps):
+                if k > 0:
+                    data = rebuild_graph(pos, vel_preds, atom_type, radius)
 
-            # --- Fluid grid field losses ---
-            density_loss = grid_density_loss(pred_pos, gt_pos, atom_type, grid_x, grid_y)
-            ke_loss = grid_kinetic_energy_loss(
-                pred_pos, vel_preds, gt_pos, vel_targets, atom_type, grid_x, grid_y,
-            )
+                disp_preds, vel_preds = model(data)
 
-            loss = (
-                lambda_boundary * (nf_disp_loss + nf_vel_loss)
-                + density_loss
-                + lambda_ke * ke_loss
-            )
+                # GT for this rollout step
+                gt_pos, gt_vel, gt_disp = train_dataset.get_gt(seq_start + k, device)
 
+                pred_pos = pos + disp_preds
+
+                # --- Non-fluid per-node loss ---
+                non_fluid = (atom_type == 2) | (atom_type == 3) | (atom_type == 4)
+                if non_fluid.any():
+                    nf_disp_loss = criterion(disp_preds[non_fluid], gt_disp[non_fluid])
+                    nf_vel_loss = criterion(vel_preds[non_fluid], gt_vel[non_fluid])
+                else:
+                    nf_disp_loss = torch.zeros((), device=device)
+                    nf_vel_loss = torch.zeros((), device=device)
+
+                # --- Fluid grid field losses ---
+                density_loss = grid_density_loss(pred_pos, gt_pos, atom_type, grid_x, grid_y)
+                ke_loss = grid_kinetic_energy_loss(
+                    pred_pos, vel_preds, gt_pos, gt_vel, atom_type, grid_x, grid_y,
+                )
+
+                step_loss = (
+                    lambda_boundary * (nf_disp_loss + nf_vel_loss)
+                    + density_loss
+                    + lambda_ke * ke_loss
+                )
+                total_step_loss = total_step_loss + step_loss
+
+                # Advance state for next rollout step (keep in computation graph)
+                pos = pred_pos
+
+            loss = total_step_loss / rollout_steps
             loss.backward()
             optimizer.step()
 
@@ -284,40 +355,50 @@ def train(
 
         avg_train_loss = train_loss / max(num_batches, 1)
 
+        # ---- Validation ----
         model.eval()
         val_loss = 0.0
         val_batches = 0
         with torch.no_grad():
-            for batch in val_loader:
-                batch = batch.to(device)
-                disp_preds, vel_preds = model(batch)
-                disp_targets = batch.y.to(device)
-                vel_targets = batch.vel_target.to(device)
-                atom_type = batch.atom_type
+            for seq_start in val_starts:
+                data = val_dataset[seq_start]
+                data = data.to(device)
+                pos = data.pos
+                atom_type = data.atom_type
 
-                pred_pos = batch.pos + disp_preds
-                gt_pos = batch.pos + disp_targets
+                total_step_loss = 0.0
 
-                non_fluid = (atom_type == 2) | (atom_type == 3) | (atom_type == 4)
-                if non_fluid.any():
-                    nf_disp_loss = criterion(disp_preds[non_fluid], disp_targets[non_fluid])
-                    nf_vel_loss = criterion(vel_preds[non_fluid], vel_targets[non_fluid])
-                else:
-                    nf_disp_loss = torch.zeros((), device=device)
-                    nf_vel_loss = torch.zeros((), device=device)
+                for k in range(rollout_steps):
+                    if k > 0:
+                        data = rebuild_graph(pos, vel_preds, atom_type, radius)
 
-                density_loss = grid_density_loss(pred_pos, gt_pos, atom_type, grid_x, grid_y)
-                ke_loss = grid_kinetic_energy_loss(
-                    pred_pos, vel_preds, gt_pos, vel_targets, atom_type, grid_x, grid_y,
-                )
+                    disp_preds, vel_preds = model(data)
+                    gt_pos, gt_vel, gt_disp = val_dataset.get_gt(seq_start + k, device)
+                    pred_pos = pos + disp_preds
 
-                loss = (
-                    lambda_boundary * (nf_disp_loss + nf_vel_loss)
-                    + density_loss
-                    + lambda_ke * ke_loss
-                )
+                    non_fluid = (atom_type == 2) | (atom_type == 3) | (atom_type == 4)
+                    if non_fluid.any():
+                        nf_disp_loss = criterion(disp_preds[non_fluid], gt_disp[non_fluid])
+                        nf_vel_loss = criterion(vel_preds[non_fluid], gt_vel[non_fluid])
+                    else:
+                        nf_disp_loss = torch.zeros((), device=device)
+                        nf_vel_loss = torch.zeros((), device=device)
 
-                val_loss += loss.item()
+                    density_loss = grid_density_loss(pred_pos, gt_pos, atom_type, grid_x, grid_y)
+                    ke_loss = grid_kinetic_energy_loss(
+                        pred_pos, vel_preds, gt_pos, gt_vel, atom_type, grid_x, grid_y,
+                    )
+
+                    step_loss = (
+                        lambda_boundary * (nf_disp_loss + nf_vel_loss)
+                        + density_loss
+                        + lambda_ke * ke_loss
+                    )
+                    total_step_loss += step_loss.item()
+
+                    pos = pred_pos
+
+                val_loss += total_step_loss / rollout_steps
                 val_batches += 1
 
         avg_val_loss = val_loss / max(val_batches, 1)
@@ -326,6 +407,7 @@ def train(
             f"Epoch {epoch:02d} | "
             f"train_loss={avg_train_loss:.6f} | "
             f"val_loss={avg_val_loss:.6f} | "
+            f"rollout={rollout_steps} | "
             f"lambda_ke={lambda_ke} | "
             f"lambda_boundary={lambda_boundary}"
         )
@@ -355,8 +437,8 @@ def main() -> None:
     """
 
     all_configs = [
-        {"name": "vanilla", "lambda_boundary": 0.0},
-        {"name": "boundary", "lambda_boundary": 5.0},
+        {"name": "vanilla", "lambda_boundary": 0.0, "rollout_steps": 3},
+        {"name": "boundary", "lambda_boundary": 5.0, "rollout_steps": 3},
     ]
 
     parser = argparse.ArgumentParser(description="Train physics-informed GNN configurations.")
@@ -394,6 +476,7 @@ def main() -> None:
             lambda_boundary=cfg.get("lambda_boundary", 5.0),
             hidden_channels=cfg.get("hidden_channels", 128),
             num_layers=cfg.get("num_layers", 2),
+            rollout_steps=cfg.get("rollout_steps", 1),
             experiment_name=cfg["name"],
         )
 

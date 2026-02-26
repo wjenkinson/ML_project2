@@ -42,6 +42,7 @@ STAGE_A_FIXED = {
     "batch_size": 1,
     "lambda_ke": 1.0,
     "lambda_boundary": 0.0,
+    "rollout_steps": 3,
 }
 
 STAGE_B_KE_VALUES = [1.0, 2.0, 5.0]
